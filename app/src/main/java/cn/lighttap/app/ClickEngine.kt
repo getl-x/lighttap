@@ -11,6 +11,8 @@ data class RuntimeState(
     val rounds: Long = 0,
     val elapsedMs: Long = 0,
     val nextIndex: Int = 0,
+    val nextRepeat: Int = 0,
+    val waitRemainingMs: Long = 0,
     val message: String = "准备就绪",
 )
 fun interface TapDispatcher { suspend fun tap(points: List<ClickPoint>): Boolean }
@@ -53,6 +55,7 @@ class ClickEngine(
         }
         worker = scope.launch {
             try {
+                waitActive(config.startDelayMs, revision, "启动倒计时")
                 while (isActive && token == generation) {
                     awaitRunning()
                     val planNow = config
@@ -65,10 +68,15 @@ class ClickEngine(
                         break
                     }
                     val points = planNow.activePoints()
+                    if (points.isEmpty()) { fail("没有启用的动作，请修改后重新开始"); break }
                     val index = state.value.nextIndex.coerceIn(0, points.lastIndex)
                     val version = revision
                     val taps = if (planNow.mode == ClickMode.SIMULTANEOUS) points else listOf(points[index])
-                    if (!dispatcher.tap(taps)) {
+                    mutableState.value = state.value.copy(message = "执行 ${index + 1}/${points.size}：${points[index].type.title}", waitRemainingMs = 0)
+                    val success = if (taps.singleOrNull()?.type == ActionType.WAIT) {
+                        waitActive(taps[0].durationMs, version, "等待动作"); true
+                    } else dispatcher.tap(taps)
+                    if (!success) {
                         // Allow an overlay pause/stop touch to reach Main before treating
                         // a cancelled gesture as an error. Never queue another gesture here.
                         delay(80)
@@ -83,10 +91,13 @@ class ClickEngine(
                     if (token != generation) break
                     // Editing while paused starts a fresh sequence with the edited points.
                     if (version != revision) continue
-                    val roundComplete = planNow.mode != ClickMode.SEQUENCE || index == points.lastIndex
+                    val repeated = state.value.nextRepeat + 1
+                    val stepComplete = planNow.mode == ClickMode.SIMULTANEOUS || repeated >= points[index].repeatCount
+                    val roundComplete = stepComplete && (planNow.mode != ClickMode.SEQUENCE || index == points.lastIndex)
                     val rounds = state.value.rounds + if (roundComplete) 1 else 0
                     mutableState.value = state.value.copy(
-                        rounds = rounds, nextIndex = if (roundComplete) 0 else index + 1, elapsedMs = elapsed(),
+                        rounds = rounds, nextIndex = if (roundComplete) 0 else if (stepComplete) index + 1 else index,
+                        nextRepeat = if (stepComplete) 0 else repeated, elapsedMs = elapsed(),
                     )
                     if (planNow.stopMode == StopMode.ROUNDS && rounds >= planNow.roundLimit) {
                         finish("已完成 $rounds 轮")
@@ -94,6 +105,7 @@ class ClickEngine(
                     }
                     val gap = if (planNow.mode == ClickMode.SIMULTANEOUS) planNow.groupIntervalMs else points[index].intervalMs
                     waitActive(gap, version)
+                    if (roundComplete && planNow.roundDelayMs > 0) waitActive(planNow.roundDelayMs, version, "下一轮前等待")
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -103,12 +115,13 @@ class ClickEngine(
         }
     }
     private suspend fun awaitRunning() { state.first { it.status == RunStatus.RUNNING } }
-    private suspend fun waitActive(ms: Long, version: Long) {
+    private suspend fun waitActive(ms: Long, version: Long, label: String? = null) {
         val target = elapsed() + ms
         while (currentCoroutineContext().isActive && version == revision) {
             awaitRunning()
             val remaining = target - elapsed()
-            if (remaining <= 0) return
+            if (remaining <= 0) { mutableState.value = state.value.copy(waitRemainingMs = 0); return }
+            if (label != null) mutableState.value = state.value.copy(waitRemainingMs = remaining, message = "$label ${(remaining + 999) / 1000} 秒")
             delay(minOf(remaining, 20))
         }
     }
@@ -127,7 +140,7 @@ class ClickEngine(
         if (state.value.status == RunStatus.RUNNING || config == plan) return
         config = plan
         revision++
-        mutableState.value = state.value.copy(nextIndex = 0)
+        mutableState.value = state.value.copy(nextIndex = 0, nextRepeat = 0, waitRemainingMs = 0)
     }
     fun stop(message: String = "已停止") { end(RunStatus.IDLE, message, reset = true) }
     fun fail(message: String) { end(RunStatus.ERROR, message, reset = false) }

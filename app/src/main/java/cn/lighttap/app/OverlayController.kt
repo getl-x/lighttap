@@ -26,6 +26,7 @@ class OverlayController(private val service: ClickAccessibilityService) {
     private var lastConfig: ClickConfig? = null
     private var editing: Boolean? = null
     private var collapsed = false
+    private val preferences = service.getSharedPreferences("ordinary_overlay", android.content.Context.MODE_PRIVATE)
     private val markers = mutableListOf<View>()
     private fun dp(value: Int) = (value * service.resources.displayMetrics.density).roundToInt()
     private fun shape(color: Int, radius: Int) = GradientDrawable().apply { setColor(color); cornerRadius = dp(radius).toFloat() }
@@ -41,20 +42,23 @@ class OverlayController(private val service: ClickAccessibilityService) {
     fun render(config: ClickConfig, state: RuntimeState, visible: Boolean, settingsVisible: Boolean = service.appModel.settingsVisible.value) {
         if (!visible) { clear(); return }
         if (panel == null) buildPanel()
+        panel?.alpha = config.overlayOpacity / 100f
+        panel?.keepScreenOn = config.keepScreenOn && state.status == RunStatus.RUNNING
         statusText?.text = service.getString(R.string.overlay_status, state.rounds, state.elapsedMs / 1000, state.message)
         runButton?.text = if (collapsed) when (state.status) { RunStatus.RUNNING -> "暂停"; RunStatus.PAUSED -> "继续"; else -> "开始" }
             else when (state.status) { RunStatus.RUNNING -> "Ⅱ 暂停"; RunStatus.PAUSED -> "▶ 继续"; else -> "▶ 开始" }
-        addButton?.isEnabled = state.status != RunStatus.RUNNING && config.points.size < 10
+        addButton?.isEnabled = state.status != RunStatus.RUNNING && config.points.size < MAX_ACTIONS
         val canEdit = state.status != RunStatus.RUNNING && !settingsVisible
         if (lastConfig != config || editing != canEdit) {
             hideMarkers()
-            if (canEdit) config.points.forEachIndexed { index, point -> addMarker(index, point) }
+            if (canEdit) config.points.forEachIndexed { index, point -> if (point.type != ActionType.WAIT) { addMarker(index, point); if (point.type == ActionType.SWIPE) addMarker(index, point, true) } }
             lastConfig = config; editing = canEdit
         }
     }
     private fun buildPanel() {
-        val oldX = panelParams?.x ?: dp(12)
-        val oldY = panelParams?.y ?: dp(80)
+        if (panelParams == null) collapsed = preferences.getBoolean("collapsed", false)
+        val oldX = panelParams?.x ?: preferences.getInt("x", dp(12))
+        val oldY = panelParams?.y ?: preferences.getInt("y", dp(80))
         val layout = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(8), dp(8), dp(8), dp(8))
@@ -112,6 +116,7 @@ class OverlayController(private val service: ClickAccessibilityService) {
     private fun toggleCollapsed() {
         panel?.let { runCatching { wm.removeViewImmediate(it) } }
         panel = null; collapsed = !collapsed
+        preferences.edit().putBoolean("collapsed", collapsed).apply()
         buildPanel()
         render(service.appModel.config.value, service.appModel.runtime.value, true)
     }
@@ -135,25 +140,27 @@ class OverlayController(private val service: ClickAccessibilityService) {
         val height = if (view.height > 0) view.height else dp(260)
         return PanelBounds(position[0], position[1], position[0] + width, position[1] + height)
     }
-    private fun addMarker(index: Int, point: ClickPoint) {
-        val size = dp(44)
+    private fun addMarker(index: Int, point: ClickPoint, endpoint: Boolean = false) {
+        val size = dp(service.appModel.config.value.markerSizeDp)
+        val px = if (endpoint) point.endX else point.x; val py = if (endpoint) point.endY else point.y
         val marker = TextView(service).apply {
-            text = service.getString(R.string.marker_number, index + 1); textSize = 18f; gravity = Gravity.CENTER
+            text = "${index + 1}${if (point.type == ActionType.SWIPE) if (endpoint) "终" else "起" else ""}"; textSize = 14f; gravity = Gravity.CENTER
             setTypeface(null, Typeface.BOLD); setTextColor(Color.WHITE)
             contentDescription = "点击点 ${index + 1}，长按删除，拖动调整"
-            background = shape(Color.argb(225, 93, 84, 217), 22).apply { setStroke(dp(2), Color.WHITE) }
+            background = shape(if (!point.enabled) Color.GRAY else if (endpoint) Color.rgb(35, 129, 105) else Color.argb(225, 93, 84, 217), 36).apply { setStroke(dp(2), Color.WHITE) }
+            alpha = service.appModel.config.value.overlayOpacity / 100f
             elevation = dp(5).toFloat()
             setOnLongClickListener { service.appModel.edit { c -> c.copy(points = c.points.filterNot { it.id == point.id }) }; true }
         }
-        val lp = params(size, size).apply { x = point.x.roundToInt() - size / 2; y = point.y.roundToInt() - size / 2 }
-        draggable(marker, marker, lp) { service.movePoint(point.id, it.first, it.second) }
+        val lp = params(size, size).apply { x = px.roundToInt() - size / 2; y = py.roundToInt() - size / 2 }
+        draggable(marker, marker, lp) { service.movePoint(point.id, it.first, it.second, endpoint) }
         markers += marker
         wm.addView(marker, lp)
         marker.post {
             if (!marker.isAttachedToWindow) return@post
             val location = IntArray(2); marker.getLocationOnScreen(location)
-            val dx = point.x.roundToInt() - (location[0] + size / 2)
-            val dy = point.y.roundToInt() - (location[1] + size / 2)
+            val dx = px.roundToInt() - (location[0] + size / 2)
+            val dy = py.roundToInt() - (location[1] + size / 2)
             if (dx != 0 || dy != 0) { lp.x += dx; lp.y += dy; runCatching { wm.updateViewLayout(marker, lp) } }
         }
     }
@@ -183,7 +190,8 @@ class OverlayController(private val service: ClickAccessibilityService) {
                     if (dragged && moved != null && view.isAttachedToWindow) {
                         val location = IntArray(2); view.getLocationOnScreen(location)
                         moved((location[0] + view.width / 2f) to (location[1] + view.height / 2f))
-                    } else if (!dragged) handle.performClick()
+                    } else if (dragged && moved == null) preferences.edit().putInt("x", lp.x).putInt("y", lp.y).apply()
+                    else if (!dragged) handle.performClick()
                     true
                 }
                 else -> false

@@ -1,5 +1,6 @@
 package cn.lighttap.app
 
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.app.KeyguardManager
@@ -13,6 +14,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.util.DisplayMetrics
 import android.view.WindowManager
+import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import android.widget.Toast
 import kotlinx.coroutines.*
@@ -23,6 +25,7 @@ class ClickAccessibilityService : AccessibilityService() {
     private lateinit var engine: ClickEngine
     private lateinit var overlay: OverlayController
     private var connected = false
+    private val capturedVolumeKeys = mutableSetOf<Int>()
     private val model get() = appModel
     private val displayManager get() = getSystemService(DisplayManager::class.java)
     private val displayListener = object : DisplayManager.DisplayListener {
@@ -43,7 +46,7 @@ class ClickAccessibilityService : AccessibilityService() {
             val panel = overlay.bounds()
             !getSystemService(KeyguardManager::class.java).isKeyguardLocked &&
                 getSystemService(PowerManager::class.java).isInteractive &&
-                points.none { panel?.contains(it.x, it.y) == true }
+                points.none { panel?.intersects(it) == true }
         })
         overlay = OverlayController(this)
         connected = true
@@ -54,6 +57,9 @@ class ClickAccessibilityService : AccessibilityService() {
         displayManager.registerDisplayListener(displayListener, null)
         scope.launch { engine.state.collect { model.runtime.value = it } }
         scope.launch { combine(model.config, engine.state, model.overlayVisible, model.settingsVisible) { config, runtime, visible, settings -> overlay.render(config, runtime, visible, settings) }.collect {} }
+        scope.launch { model.config.collect { config ->
+            serviceInfo = serviceInfo.apply { flags = if (config.volumeKeys) flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS else flags and AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS.inv() }
+        } }
     }
     @Suppress("DEPRECATION")
     private fun readScreen(): ScreenSpec {
@@ -104,7 +110,7 @@ class ClickAccessibilityService : AccessibilityService() {
     fun addPoint() {
         if (model.runtime.value.status == RunStatus.RUNNING) { notice("请先暂停"); return }
         val current = model.screen.value ?: return
-        if (model.config.value.points.size >= 10) { notice("最多支持 10 个点"); return }
+        if (model.config.value.points.size >= MAX_ACTIONS) { notice("最多支持 $MAX_ACTIONS 个动作"); return }
         val existing = model.config.value.points
         val n = existing.size
         val panel = overlay.bounds()
@@ -112,13 +118,23 @@ class ClickAccessibilityService : AccessibilityService() {
         val (x, y) = candidates.firstOrNull { (x, y) -> panel?.contains(x, y) != true && existing.none { kotlin.math.abs(it.x - x) < 20 && kotlin.math.abs(it.y - y) < 20 } } ?: (current.width * 0.5f to current.height * 0.8f)
         model.edit { it.copy(points = it.points + ClickPoint((it.points.maxOfOrNull { p -> p.id } ?: 0) + 1, x + if (n >= 9) 40 else 0, y), screen = it.screen ?: current) }
     }
-    fun movePoint(id: Long, x: Float, y: Float) {
+    fun movePoint(id: Long, x: Float, y: Float, endpoint: Boolean = false) {
         val screen = model.screen.value ?: return
-        model.edit { config -> config.copy(points = config.points.map { if (it.id == id) it.copy(x = x.coerceIn(0f, (screen.width - 1).toFloat()), y = y.coerceIn(0f, (screen.height - 1).toFloat())) else it }) }
+        val px = x.coerceIn(0f, (screen.width - 1).toFloat()); val py = y.coerceIn(0f, (screen.height - 1).toFloat())
+        model.edit { config -> config.copy(points = config.points.map { if (it.id != id) it else if (endpoint) it.copy(endX = px, endY = py) else it.copy(x = px, y = py) }) }
+    }
+    override fun onKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode !in listOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)) return super.onKeyEvent(event)
+        if (event.action == KeyEvent.ACTION_UP) return if (capturedVolumeKeys.remove(event.keyCode)) true else super.onKeyEvent(event)
+        if (event.keyCode in capturedVolumeKeys) return true
+        if (event.action != KeyEvent.ACTION_DOWN || event.repeatCount != 0 || !connected || !model.config.value.volumeKeys || !model.overlayVisible.value) return super.onKeyEvent(event)
+        capturedVolumeKeys += event.keyCode
+        if (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) stopRun() else toggleRun()
+        return true
     }
     fun openSettings() { engine.pause(); startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)) }
     fun notice(text: String) { Toast.makeText(this, text, Toast.LENGTH_LONG).show() }
-    private fun interrupt(message: String) { if (connected) engine.fail(message) }
+    private fun interrupt(message: String) { if (connected) { engine.fail(message) } }
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
     override fun onInterrupt() { interrupt("无障碍服务被中断，任务已停止") }
     override fun onUnbind(intent: Intent?): Boolean { disconnect(); return super.onUnbind(intent) }

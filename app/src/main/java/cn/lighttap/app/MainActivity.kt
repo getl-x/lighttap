@@ -104,44 +104,18 @@ private fun MainScreen(model: AppModel, openAccessibility: () -> Unit, openTest:
                     }
                 }
             }
+            ProfileSettings(model, editable)
             Section("点击方式", "01") {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ClickMode.entries.forEach { mode -> FilterChip(selected = config.mode == mode, enabled = editable, onClick = { model.edit { it.copy(mode = mode) } }, label = { Text(mode.title) }, modifier = Modifier.weight(1f)) }
                 }
-                Text(when (config.mode) { ClickMode.SINGLE -> "重复点击第 1 个点；其他点位保留，但不参与执行。"; ClickMode.SEQUENCE -> "按编号顺序点击，全部点执行一次算一轮。"; ClickMode.SIMULTANEOUS -> "每轮同时触碰全部点位，目标应用需支持多指触摸。" }, color = Muted, fontSize = 12.sp, lineHeight = 19.sp)
+                Text(when (config.mode) { ClickMode.SINGLE -> "重复执行第一个启用的动作，其他动作保留。"; ClickMode.SEQUENCE -> "按编号执行所有启用动作，各步重复完成后算一轮。"; ClickMode.SIMULTANEOUS -> "每轮同时执行启用的点击或长按；单步重复须为 1，数量受系统上限限制。" }, color = Muted, fontSize = 12.sp, lineHeight = 19.sp)
                 if (config.mode == ClickMode.SIMULTANEOUS) {
                     SettingRow("每轮等待", "${config.groupIntervalMs} 毫秒", editable) { numberEdit = NumericEdit("同时模式每轮等待", config.groupIntervalMs, 10, 60_000, "毫秒") { n -> model.edit { it.copy(groupIntervalMs = n) } } }
                 }
             }
-            Section("点击点位", "${config.points.size} / 10") {
-                if (config.points.isEmpty()) {
-                    Text("还没有点击点", fontWeight = FontWeight.Medium)
-                    Text("显示控制条后，切换到目标应用，点「＋ 点」添加，再拖动圆点调整位置。", fontSize = 12.sp, color = Muted, lineHeight = 20.sp)
-                }
-                config.points.forEachIndexed { index, point ->
-                    if (index > 0) HorizontalDivider(color = Canvas)
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.size(32.dp).background(Color(0xFFECE9FF), RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) { Text("${index + 1}", color = Purple, fontWeight = FontWeight.Bold) }
-                            Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                                Text("点击点 ${index + 1}", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                                Text("X ${point.x.toInt()}  ·  Y ${point.y.toInt()}", fontSize = 11.sp, color = Muted)
-                            }
-                            TextButton(enabled = editable, onClick = { model.edit { c -> c.copy(points = c.points.filterNot { it.id == point.id }) } }) { Text("删除", color = if (editable) MaterialTheme.colorScheme.error else Muted) }
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            TextButton(enabled = editable && config.mode != ClickMode.SIMULTANEOUS, onClick = { numberEdit = NumericEdit("点击点 ${index + 1} 后等待", point.intervalMs, 10, 60_000, "毫秒") { n -> model.edit { c -> c.copy(points = c.points.map { if (it.id == point.id) it.copy(intervalMs = n) else it }) } } }, modifier = Modifier.weight(1f)) { Text(if (config.mode == ClickMode.SIMULTANEOUS) "使用统一轮间隔" else "等待 ${point.intervalMs} ms", fontSize = 12.sp) }
-                            TextButton(enabled = editable && index > 0, onClick = { model.edit { c -> c.copy(points = c.points.toMutableList().apply { add(index - 1, removeAt(index)) }) } }) { Text("上移", fontSize = 12.sp) }
-                            TextButton(enabled = editable && index < config.points.lastIndex, onClick = { model.edit { c -> c.copy(points = c.points.toMutableList().apply { add(index + 1, removeAt(index)) }) } }) { Text("下移", fontSize = 12.sp) }
-                        }
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { service?.let { it.showOverlay(); it.addPoint() } }, enabled = editable && service != null && config.points.size < 10, modifier = Modifier.weight(1f)) { Text("添加点位") }
-                    TextButton(onClick = { clearConfirm = true }, enabled = editable && config.points.isNotEmpty()) { Text("清空") }
-                }
-                Text("暂停后可编辑；修改设置后从第一个点继续，已完成轮数和运行时间保留。", fontSize = 11.sp, color = Muted)
-            }
+            ActionSettings(model, editable) { clearConfirm = true }
+            AdvancedSettings(model, editable)
             Section("何时停止", "02") {
                 Column {
                     StopMode.entries.forEach { mode ->
@@ -156,10 +130,10 @@ private fun MainScreen(model: AppModel, openAccessibility: () -> Unit, openTest:
                     StopMode.DURATION -> SettingRow("有效运行时长", "${config.durationMs / 1000} 秒", editable) { numberEdit = NumericEdit("运行时长（暂停不计时）", config.durationMs / 1000, 1, 86_400, "秒") { n -> model.edit { it.copy(durationMs = n * 1000) } } }
                     StopMode.MANUAL -> Text("持续循环，直到你通过控制条暂停或停止。", fontSize = 12.sp, color = Muted)
                 }
-                Text("每次按住 50 毫秒。等待时间从点击释放后开始计算，实际速度受设备与目标应用影响。", fontSize = 11.sp, color = Muted, lineHeight = 18.sp)
+                Text("默认按住 50 毫秒，可逐步调整。动作后等待从手势结束开始计算，实际速度受设备与目标应用影响。", fontSize = 11.sp, color = Muted, lineHeight = 18.sp)
             }
             OutlinedButton(onClick = openTest, modifier = Modifier.fillMaxWidth()) { Text("打开点击测试页") }
-            Text("完全离线 · 不读取屏幕内容\n锁屏、旋转或服务断开时自动停止。恢复后需手动开始。", Modifier.align(Alignment.CenterHorizontally), fontSize = 11.sp, color = Muted, lineHeight = 19.sp)
+            Text("完全离线 · 数据在本机处理\n锁屏、旋转或服务断开时自动停止。恢复后需手动开始。", Modifier.align(Alignment.CenterHorizontally), fontSize = 11.sp, color = Muted, lineHeight = 19.sp)
         }
     }
     numberEdit?.let { edit ->
@@ -170,7 +144,7 @@ private fun MainScreen(model: AppModel, openAccessibility: () -> Unit, openTest:
             OutlinedTextField(value = text, onValueChange = { input -> if (input.length <= 9 && input.all { it.isDigit() }) text = input }, label = { Text(edit.unit) }, supportingText = { Text("范围 ${edit.min}～${edit.max} ${edit.unit}") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true)
         }, confirmButton = { TextButton(enabled = valid && editable, onClick = { if (valid) edit.apply(value!!); numberEdit = null }) { Text("保存") } }, dismissButton = { TextButton(onClick = { numberEdit = null }) { Text("取消") } })
     }
-    if (explainService) AlertDialog(onDismissRequest = { explainService = false }, title = { Text("开启点击服务") }, text = { Text("轻点使用无障碍服务，在你选择的位置模拟点击并显示悬浮控制条。\n\n不读取界面内容，不录屏，不联网。请在系统设置中找到「轻点 · 点击服务」并手动开启。\n\n如果系统提示受限制，请在轻点的应用信息页中查看「允许受限制的设置」。") }, confirmButton = { TextButton(onClick = { explainService = false; openAccessibility() }) { Text("前往系统设置") } }, dismissButton = { TextButton(onClick = { explainService = false }) { Text("取消") } })
+    if (explainService) AlertDialog(onDismissRequest = { explainService = false }, title = { Text("开启点击服务") }, text = { Text("轻点使用无障碍服务，在你选择的位置模拟点击并显示悬浮控制条。\n\n应用不联网、不录屏、不读取屏幕内容。请在系统设置中找到「轻点 · 点击服务」并手动开启。\n\n如果系统提示受限制，请在轻点的应用信息页中查看「允许受限制的设置」。") }, confirmButton = { TextButton(onClick = { explainService = false; openAccessibility() }) { Text("前往系统设置") } }, dismissButton = { TextButton(onClick = { explainService = false }) { Text("取消") } })
     if (clearConfirm) AlertDialog(onDismissRequest = { clearConfirm = false }, title = { Text("清空全部点位？") }, text = { Text("此操作会删除当前 ${config.points.size} 个点位。") }, confirmButton = { TextButton(enabled = editable, onClick = { model.edit { it.copy(points = emptyList(), screen = model.screen.value) }; clearConfirm = false }) { Text("清空") } }, dismissButton = { TextButton(onClick = { clearConfirm = false }) { Text("取消") } })
 }
 @Composable private fun Section(title: String, aside: String, content: @Composable ColumnScope.() -> Unit) {

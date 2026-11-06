@@ -27,7 +27,7 @@ class ConfigTest {
         assertNotNull(plan.validationError(screen, 1, null))
     }
     @Test fun pointLimitAndInvalidIntervalsAreRejected() {
-        assertNotNull(config.copy(points = (1..11).map { ClickPoint(it.toLong(), 500f, 1000f) }).validationError(screen, 20, null))
+        assertNotNull(config.copy(points = (1..101).map { ClickPoint(it.toLong(), 500f, 1000f) }).validationError(screen, 20, null))
         assertNotNull(config.copy(groupIntervalMs = 9).validationError(screen, 10, null))
         assertNotNull(config.copy(points = listOf(ClickPoint(1, 500f, 1000f, 60_001))).validationError(screen, 10, null))
     }
