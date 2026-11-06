@@ -4,7 +4,7 @@
 
 ## 安装和使用
 
-1. 安装自行构建的 APK，或在仓库 Actions 的 Artifacts 下载构建产物；按系统提示允许本次安装来源。
+1. 到 [Releases 下载最新版正式 APK](https://github.com/getl-x/lighttap/releases/latest)，安装 `lighttap-版本-release.apk`；按系统提示允许本次安装来源。
 2. 打开「轻点」，点击「开启点击服务」，阅读说明后进入系统无障碍设置，手动开启「轻点 · 点击服务」。
 3. 如果出现「受限制的设置」，到「设置 → 应用 → 轻点 → 应用信息」查看右上角菜单中的「允许受限制的设置」，再返回开启服务。HyperOS 的具体入口会随版本变化；不需要 Root，也不要关闭整个系统的安全防护。
 4. 点击「显示悬浮控制条」，切换到目标应用，点击「＋ 点」，拖动编号圆点到目标位置。
@@ -57,6 +57,24 @@ bash ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
 Release 签名从不入库的 `signing.properties`，或 `SIGNING_STORE_FILE`、`SIGNING_STORE_PASSWORD`、`SIGNING_KEY_ALIAS`、`SIGNING_KEY_PASSWORD` 环境变量读取。未配置签名时，Gradle 的 release 输出是未签名包，不作为可安装交付物；本机脚本会拒绝这种交付构建。
+
+## 发布正式版本
+
+正式安装包在 [GitHub Releases](https://github.com/getl-x/lighttap/releases) 下载，附带 SHA256 校验文件。Actions 的 Debug APK 用于开发验证，签名与正式包不同。
+
+为让正式签名密钥只保留在本机，使用本地一键构建发布：
+
+1. 更新 `versionName` 和递增的 `versionCode`，提交并推送源码。
+2. 保留原有本地签名配置，确认 GitHub CLI 已登录。
+3. 执行以下命令（不使用代理时省略 `-UseSystemProxy`）：
+
+```powershell
+.\scripts\publish.ps1 -UseSystemProxy
+# 只检查发布配置，不构建、不上传：
+.\scripts\publish.ps1 -CheckOnly
+```
+
+脚本会完成测试、Lint、Release 构建和签名验证，以当前版本创建草稿，仅上传正式 APK 与 SHA256SUMS.txt，核对 GitHub 返回的附件哈希后再公开发布。已有版本不会覆盖；不上传密钥、密码、日志、本机配置或整个交付目录。源码标签固定在已推送的提交。
 
 ## GitHub Actions
 
