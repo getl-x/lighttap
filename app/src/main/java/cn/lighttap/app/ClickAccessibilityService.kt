@@ -19,7 +19,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.combine
 
 class ClickAccessibilityService : AccessibilityService() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var engine: ClickEngine
     private lateinit var overlay: OverlayController
     private var connected = false
@@ -38,6 +38,7 @@ class ClickAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         if (connected) return
+        if (!scope.isActive) scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         engine = ClickEngine(scope, AndroidTapDispatcher(this) { points ->
             val panel = overlay.bounds()
             !getSystemService(KeyguardManager::class.java).isKeyguardLocked &&

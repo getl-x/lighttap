@@ -69,7 +69,7 @@ private fun MainScreen(model: AppModel, openAccessibility: () -> Unit, openTest:
                     Text("轻点", fontSize = 25.sp, fontWeight = FontWeight.Bold)
                     Text("让重复操作，简单一点", fontSize = 12.sp, color = Muted)
                 }
-                Surface(color = Color(0xFFEAE7FF), shape = RoundedCornerShape(20.dp)) { Text("v1.0", Modifier.padding(horizontal = 12.dp, vertical = 6.dp), color = Purple, fontSize = 12.sp) }
+                Surface(color = Color(0xFFEAE7FF), shape = RoundedCornerShape(20.dp)) { Text("v${BuildConfig.VERSION_NAME}", Modifier.padding(horizontal = 12.dp, vertical = 6.dp), color = Purple, fontSize = 12.sp) }
             }
             Surface(color = Purple, shape = RoundedCornerShape(24.dp)) {
                 Column(Modifier.fillMaxWidth().padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
