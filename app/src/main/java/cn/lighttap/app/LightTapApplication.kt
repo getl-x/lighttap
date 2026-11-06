@@ -18,6 +18,7 @@ class LightTapApplication : Application() {
 val Context.appModel: AppModel get() = (applicationContext as LightTapApplication).model
 
 class AppModel(context: Context) {
+    val privateModel = PrivateModel(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val dataStore = context.settings
     private val key = stringPreferencesKey("last_config")

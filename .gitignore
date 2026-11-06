@@ -30,3 +30,14 @@ deliverables/
 *.hprof
 .DS_Store
 Thumbs.db
+private-build.properties
+
+probe/
+app/src/androidTest/java/cn/lighttap/app/ExternalProbeRunner.kt
+app/src/androidTest/AndroidManifest.xml
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.mp4
+*.har

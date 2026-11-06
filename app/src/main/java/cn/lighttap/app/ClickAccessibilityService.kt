@@ -50,7 +50,10 @@ class ClickAccessibilityService : AccessibilityService() {
         })
         overlay = OverlayController(this)
         connected = true
+        serviceInfo = serviceInfo.apply { flags = flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS }
+        if (Build.VERSION.SDK_INT >= 33) setCacheEnabled(false)
         model.service.value = this
+        model.privateModel.connect(this)
         updateScreen()
         val filter = IntentFilter().apply { addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_SHUTDOWN) }
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(receiver, filter, RECEIVER_NOT_EXPORTED) else @Suppress("DEPRECATION") registerReceiver(receiver, filter)
@@ -85,6 +88,7 @@ class ClickAccessibilityService : AccessibilityService() {
     }
     fun hideOverlay() { engine.stop(); model.overlayVisible.value = false; overlay.clear() }
     fun toggleRun() {
+        if (model.privateModel.state.value.active) { notice("请先停止其他任务"); return }
         if (engine.state.value.status == RunStatus.RUNNING) { engine.pause(); return }
         if (model.settingsVisible.value) { notice("请先切换到目标应用或点击测试页，再通过控制条开始"); return }
         showOverlay()
@@ -127,15 +131,18 @@ class ClickAccessibilityService : AccessibilityService() {
         if (event.keyCode !in listOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)) return super.onKeyEvent(event)
         if (event.action == KeyEvent.ACTION_UP) return if (capturedVolumeKeys.remove(event.keyCode)) true else super.onKeyEvent(event)
         if (event.keyCode in capturedVolumeKeys) return true
-        if (event.action != KeyEvent.ACTION_DOWN || event.repeatCount != 0 || !connected || !model.config.value.volumeKeys || !model.overlayVisible.value) return super.onKeyEvent(event)
+        if (event.action != KeyEvent.ACTION_DOWN || event.repeatCount != 0 || !connected || !model.config.value.volumeKeys || !model.overlayVisible.value || model.privateModel.state.value.active) return super.onKeyEvent(event)
         capturedVolumeKeys += event.keyCode
         if (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) stopRun() else toggleRun()
         return true
     }
     fun openSettings() { engine.pause(); startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)) }
     fun notice(text: String) { Toast.makeText(this, text, Toast.LENGTH_LONG).show() }
-    private fun interrupt(message: String) { if (connected) { engine.fail(message) } }
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
+    private fun interrupt(message: String) { if (connected) { engine.fail(message); model.privateModel.controller?.pause(message, error = true) } }
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) model.privateModel.controller?.foregroundChanged(event.packageName?.toString().orEmpty())
+    }
+    override fun onTaskRemoved(rootIntent: Intent?) { model.privateModel.clearTask(); super.onTaskRemoved(rootIntent) }
     override fun onInterrupt() { interrupt("无障碍服务被中断，任务已停止") }
     override fun onUnbind(intent: Intent?): Boolean { disconnect(); return super.onUnbind(intent) }
     override fun onDestroy() { disconnect(); super.onDestroy() }
@@ -144,6 +151,7 @@ class ClickAccessibilityService : AccessibilityService() {
         engine.fail("点击服务已断开，请重新开启")
         model.runtime.value = engine.state.value
         connected = false
+        model.privateModel.disconnect()
         model.service.value = null
         model.overlayVisible.value = false
         overlay.clear()

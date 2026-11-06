@@ -16,7 +16,7 @@ try {
         if($proxy.ProxyEnable -ne 1 -or $proxy.ProxyServer -notmatch '^(?<host>[^:;=]+):(?<port>\d+)$') { throw 'Unsupported or disabled system proxy. Run without -UseSystemProxy or configure Gradle locally.' }
         $arguments+=@("-Dhttp.proxyHost=$($Matches.host)","-Dhttp.proxyPort=$($Matches.port)","-Dhttps.proxyHost=$($Matches.host)","-Dhttps.proxyPort=$($Matches.port)")
     }
-    $arguments+=@(':app:testDebugUnitTest',':app:lintDebug',$(if($DebugApk) { ':app:assembleDebug' } else { ':app:assembleRelease' }))
+    $arguments+=@(':app:testReleaseUnitTest',':app:lintRelease',$(if($DebugApk) { ':app:assembleDebug' } else { ':app:assembleRelease' }))
     if(!$DebugApk -and !(Test-Path -LiteralPath 'signing.properties') -and !$env:SIGNING_STORE_FILE) { throw 'Release signing missing. See README.md or use -DebugApk.' }
     $gradle=if($local['gradleExecutable']) { [string]$local['gradleExecutable'] } else { Join-Path $project 'gradlew.bat' }
     & $gradle @arguments

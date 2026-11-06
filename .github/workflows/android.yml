@@ -4,11 +4,6 @@ on:
     branches: [main, master]
   pull_request:
   workflow_dispatch:
-    inputs:
-      signed_release:
-        description: 'Build a release APK using repository signing secrets'
-        type: boolean
-        default: false
 permissions:
   contents: read
 concurrency:
@@ -50,37 +45,16 @@ jobs:
           yes | "$sdkmanager" --sdk_root="$ANDROID_HOME" --licenses > "$RUNNER_TEMP/android-licenses.log"
           set -o pipefail
           "$sdkmanager" --sdk_root="$ANDROID_HOME" 'platforms;android-36' 'build-tools;36.0.0'
-      - name: Test, lint and build debug APK
-        run: bash ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --console=plain
-      - name: Restore personal signing key
-        if: github.event_name == 'workflow_dispatch' && inputs.signed_release
+      - name: Test, lint and build APK
         env:
-          KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
-          STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          for name in KEYSTORE_BASE64 STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
-            if [ -z "${!name}" ]; then echo "Missing signing secret: $name"; exit 1; fi
-          done
-          umask 077
-          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/lighttap-release.jks"
-      - name: Build signed release APK
-        if: github.event_name == 'workflow_dispatch' && inputs.signed_release
-        env:
-          SIGNING_STORE_FILE: ${{ runner.temp }}/lighttap-release.jks
-          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
-          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
-          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
-        run: bash ./gradlew :app:assembleRelease --console=plain
-      - name: Upload APKs
+          BUILD_ACCESS_SALT: ${{ secrets.BUILD_ACCESS_SALT }}
+          BUILD_ACCESS_DIGEST: ${{ secrets.BUILD_ACCESS_DIGEST }}
+        run: bash ./gradlew :app:testReleaseUnitTest :app:lintRelease :app:assembleDebug --console=plain
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: lighttap-apk-${{ github.run_number }}
-          path: |
-            app/build/outputs/apk/debug/*.apk
-            app/build/outputs/apk/release/*.apk
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
       - name: Upload verification reports
         if: always()
@@ -88,9 +62,6 @@ jobs:
         with:
           name: verification-${{ github.run_number }}
           path: |
-            app/build/reports/tests/testDebugUnitTest/
-            app/build/reports/lint-results-debug.html
+            app/build/reports/tests/testReleaseUnitTest/
+            app/build/reports/lint-results-release.html
           if-no-files-found: ignore
-      - name: Remove restored signing key
-        if: always()
-        run: rm -f "$RUNNER_TEMP/lighttap-release.jks"

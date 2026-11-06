@@ -25,7 +25,7 @@
 - 暂停后直接继续保留下一点和剩余等待时间。暂停期间修改参数或点位后，从第一个点继续，已完成轮数和有效运行时间保留。
 - 系统变慢时不补发积压点击。停止后不再派发新手势，已派发手势自然结束，最长约 20 秒（双击包含两次按住）。
 - 锁屏、熄屏、旋转、屏幕尺寸/密度变化、服务中断或手势失败时停止；不会自动恢复。屏幕参数变化后须检查并确认点位。
-- 当前配置和最多 30 套命名方案保存在应用内部 DataStore 中。卸载会删除配置；应用不联网、不录屏、不读取屏幕内容。
+- 当前配置和最多 30 套命名方案保存在应用内部 DataStore 中。卸载会删除配置；应用不联网、不录屏、不上传数据。
 
 ## 方案和常用工具
 
@@ -64,7 +64,7 @@ Windows 脚本需要 PowerShell 7。可在不入库的 `build.local.json` 中指
 其他平台配置 `JAVA_HOME` 和 Android SDK（`ANDROID_HOME` 或本地 `local.properties`），执行：
 
 ```sh
-bash ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+bash ./gradlew :app:testReleaseUnitTest :app:lintRelease :app:assembleDebug
 ```
 
 Release 签名从不入库的 `signing.properties`，或 `SIGNING_STORE_FILE`、`SIGNING_STORE_PASSWORD`、`SIGNING_KEY_ALIAS`、`SIGNING_KEY_PASSWORD` 环境变量读取。未配置签名时，Gradle 的 release 输出是未签名包，不作为可安装交付物；本机脚本会拒绝这种交付构建。
@@ -89,26 +89,15 @@ Release 签名从不入库的 `signing.properties`，或 `SIGNING_STORE_FILE`、
 
 ## GitHub Actions
 
-工作流在推送 main/master、PR 和手动触发时执行单元测试、Lint 并生成 Debug APK；在 Actions 的 Artifacts 中下载。运行状态及产物见 [Actions](https://github.com/getl-x/lighttap/actions)。
+推送 main/master、PR 和手动触发时执行单元测试、Lint，并生成 Debug APK。在 [Actions](https://github.com/getl-x/lighttap/actions) 的 Artifacts 下载构建产物。
 
-需要与本机 release APK 使用相同签名时，由仓库所有者配置这四个 Secrets：
-
-| Secret | 内容 |
-| --- | --- |
-| `SIGNING_KEYSTORE_BASE64` | 本机专用签名库文件的 Base64 内容 |
-| `SIGNING_STORE_PASSWORD` | 签名库密码 |
-| `SIGNING_KEY_ALIAS` | `lighttap` |
-| `SIGNING_KEY_PASSWORD` | 密钥密码 |
-
-手动 Run workflow 并勾选 `signed_release` 才会使用 Secrets 生成签名包。PR 构建不读取签名 Secrets，不使用 `pull_request_target`，工作流仅申请仓库内容读取权限。
-
-签名库和配套密码应保存在仓库外或本地被忽略的配置中，并私下备份；不要粘贴到日志、Issue 或公开仓库。丢失后无法用新密钥覆盖升级旧安装。GitHub 默认 Debug 签名与个人 Release 签名不同，建议使用 Release 包长期安装。
+正式版本由本地签名构建后发布到 [Releases](https://github.com/getl-x/lighttap/releases)，签名库和密码不进入源码或构建附件。正式包与 Debug 包签名不同，建议使用正式包长期安装。
 
 ## 目录与验证
 
 - `app/src/main/java/cn/lighttap/app/`：配置、执行器、持久化、无障碍服务、悬浮控制条、Compose 设置页和触摸测试页。
 - `app/src/test/`：时序、轮数、暂停、异常、配置读写和坐标校验测试，包含虚拟时间 30 分钟运行。
 - `.github/workflows/android.yml`：构建工作流。
-- `docs/ACCEPTANCE.md`：验收清单；真实设备测试和逻辑模拟测试分开记录。
+- 自动化验证以 Gradle 报告和 Actions 运行结果为准；真机结果需要现场确认。
 
 当前版本提供动作编排和方案回放；尚不包含全屏手势录制、识图编排、联网服务或商店上架。

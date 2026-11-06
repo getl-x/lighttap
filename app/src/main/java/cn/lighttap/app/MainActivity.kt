@@ -3,9 +3,11 @@ package cn.lighttap.app
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -14,10 +16,16 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -35,6 +43,7 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         appModel.settingsVisible.value = true
         appModel.service.value?.pauseRun()
+        appModel.privateModel.controller?.pause("已返回设置页，请查看后手动继续")
     }
     override fun onStop() {
         appModel.settingsVisible.value = false
@@ -43,12 +52,43 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { LightTapTheme { MainScreen(appModel, { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }, { startActivity(Intent(this, TouchTestActivity::class.java)) }) } }
+        appModel.privateModel.session.attachTask(taskId, savedInstanceState != null)
+        if (!appModel.privateModel.session.unlocked.value) appModel.privateModel.controller?.stopAndHide()
+        setContent { LightTapTheme {
+            val unlocked by appModel.privateModel.session.unlocked.collectAsStateWithLifecycle()
+            var prompt by rememberSaveable { mutableStateOf(false) }
+            var password by remember { mutableStateOf("") }
+            var verifying by remember { mutableStateOf(false) }
+            var error by remember { mutableStateOf(false) }
+            val scope = rememberCoroutineScope()
+            val taps = remember { EntryTapCounter { android.os.SystemClock.elapsedRealtime() } }
+            BackHandler(enabled = unlocked) { moveTaskToBack(true) }
+            if (unlocked) PrivatePanel(appModel) else MainScreen(appModel,
+                { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
+                { startActivity(Intent(this, TouchTestActivity::class.java)) },
+                { if (taps.tap()) { prompt = true; error = false } })
+            if (prompt && !unlocked) AlertDialog(
+                onDismissRequest = {},
+                properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+                title = { Text("访问验证") },
+                text = { OutlinedTextField(value = password, onValueChange = { password = it.take(32); error = false }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), enabled = !verifying, singleLine = true, label = { Text("密码") }, isError = error, supportingText = { if (error) Text("验证未通过") }) },
+                confirmButton = { TextButton(enabled = !verifying && password.isNotEmpty(), onClick = {
+                    verifying = true
+                    val candidate = password.toCharArray(); password = ""
+                    scope.launch {
+                        val accepted = withContext(Dispatchers.Default) { runCatching { AccessVerifier.verify(candidate, BuildConfig.ACCESS_SALT, BuildConfig.ACCESS_DIGEST) }.getOrDefault(false) }
+                        verifying = false
+                        if (accepted) { appModel.privateModel.session.unlock(); prompt = false } else error = true
+                    }
+                }) { Text(if (verifying) "验证中" else "确认") } },
+                dismissButton = { TextButton(enabled = !verifying, onClick = { prompt = false; password = ""; error = false }) { Text("关闭") } },
+            )
+        } }
     }
 }
 private data class NumericEdit(val title: String, val value: Long, val min: Long, val max: Long, val unit: String, val apply: (Long) -> Unit)
 @Composable
-private fun MainScreen(model: AppModel, openAccessibility: () -> Unit, openTest: () -> Unit) {
+private fun MainScreen(model: AppModel, openAccessibility: () -> Unit, openTest: () -> Unit, titleTap: () -> Unit) {
     val config by model.config.collectAsStateWithLifecycle()
     val runtime by model.runtime.collectAsStateWithLifecycle()
     val service by model.service.collectAsStateWithLifecycle()
@@ -66,7 +106,7 @@ private fun MainScreen(model: AppModel, openAccessibility: () -> Unit, openTest:
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(44.dp).background(Purple, RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) { Text("◎", fontSize = 30.sp, color = Color.White) }
                 Column(Modifier.padding(start = 12.dp).weight(1f)) {
-                    Text("轻点", fontSize = 25.sp, fontWeight = FontWeight.Bold)
+                    Text("轻点", modifier = Modifier.clickable(onClick = titleTap), fontSize = 25.sp, fontWeight = FontWeight.Bold)
                     Text("让重复操作，简单一点", fontSize = 12.sp, color = Muted)
                 }
                 Surface(color = Color(0xFFEAE7FF), shape = RoundedCornerShape(20.dp)) { Text("v${BuildConfig.VERSION_NAME}", Modifier.padding(horizontal = 12.dp, vertical = 6.dp), color = Purple, fontSize = 12.sp) }
@@ -144,7 +184,7 @@ private fun MainScreen(model: AppModel, openAccessibility: () -> Unit, openTest:
             OutlinedTextField(value = text, onValueChange = { input -> if (input.length <= 9 && input.all { it.isDigit() }) text = input }, label = { Text(edit.unit) }, supportingText = { Text("范围 ${edit.min}～${edit.max} ${edit.unit}") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true)
         }, confirmButton = { TextButton(enabled = valid && editable, onClick = { if (valid) edit.apply(value!!); numberEdit = null }) { Text("保存") } }, dismissButton = { TextButton(onClick = { numberEdit = null }) { Text("取消") } })
     }
-    if (explainService) AlertDialog(onDismissRequest = { explainService = false }, title = { Text("开启点击服务") }, text = { Text("轻点使用无障碍服务，在你选择的位置模拟点击并显示悬浮控制条。\n\n应用不联网、不录屏、不读取屏幕内容。请在系统设置中找到「轻点 · 点击服务」并手动开启。\n\n如果系统提示受限制，请在轻点的应用信息页中查看「允许受限制的设置」。") }, confirmButton = { TextButton(onClick = { explainService = false; openAccessibility() }) { Text("前往系统设置") } }, dismissButton = { TextButton(onClick = { explainService = false }) { Text("取消") } })
+    if (explainService) AlertDialog(onDismissRequest = { explainService = false }, title = { Text("开启点击服务") }, text = { Text("轻点使用无障碍服务，在你选择的位置模拟点击并显示悬浮控制条。\n\n仅按你启用的操作读取必要的界面控件；不录屏，不联网。请在系统设置中找到「轻点 · 点击服务」并手动开启。\n\n如果系统提示受限制，请在轻点的应用信息页中查看「允许受限制的设置」。") }, confirmButton = { TextButton(onClick = { explainService = false; openAccessibility() }) { Text("前往系统设置") } }, dismissButton = { TextButton(onClick = { explainService = false }) { Text("取消") } })
     if (clearConfirm) AlertDialog(onDismissRequest = { clearConfirm = false }, title = { Text("清空全部点位？") }, text = { Text("此操作会删除当前 ${config.points.size} 个点位。") }, confirmButton = { TextButton(enabled = editable, onClick = { model.edit { it.copy(points = emptyList(), screen = model.screen.value) }; clearConfirm = false }) { Text("清空") } }, dismissButton = { TextButton(onClick = { clearConfirm = false }) { Text("取消") } })
 }
 @Composable private fun Section(title: String, aside: String, content: @Composable ColumnScope.() -> Unit) {
