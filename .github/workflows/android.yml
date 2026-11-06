@@ -31,8 +31,9 @@ jobs:
           set -euo pipefail
           export ANDROID_HOME="$RUNNER_TEMP/android-sdk"
           export ANDROID_USER_HOME="$RUNNER_TEMP/android-user"
-          printf 'ANDROID_HOME=%s\nANDROID_USER_HOME=%s\n' \
-            "$ANDROID_HOME" "$ANDROID_USER_HOME" >> "$GITHUB_ENV"
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          printf 'ANDROID_HOME=%s\nANDROID_USER_HOME=%s\nANDROID_SDK_ROOT=%s\n' \
+            "$ANDROID_HOME" "$ANDROID_USER_HOME" "$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
           archive="$RUNNER_TEMP/android-commandlinetools.zip"
           curl --fail --location --retry 3 \
             'https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip' \
