@@ -100,4 +100,6 @@ Release 签名从不入库的 `signing.properties`，或 `SIGNING_STORE_FILE`、
 - `.github/workflows/android.yml`：构建工作流。
 - 自动化验证以 Gradle 报告和 Actions 运行结果为准；真机结果需要现场确认。
 
+普通动作与方案功能见 [使用指南](docs/FEATURES-1.2.0.md)，相关设备测试与适用范围见 [验证记录](docs/VERIFICATION-1.2.0.md)。虚拟时间测试和按键回调测试不能代替真机长时间运行或实体按键验收。
+
 当前版本提供动作编排和方案回放；尚不包含全屏手势录制、识图编排、联网服务或商店上架。

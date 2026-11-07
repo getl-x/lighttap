@@ -9,11 +9,15 @@ import androidx.annotation.RequiresApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 
-class AndroidChoiceVision(private val service: AccessibilityService) {
+fun interface VisitChoiceVerifier { suspend fun requireNormal(normal: UiNode, abnormal: UiNode) }
+
+class AndroidChoiceVision(private val service: AccessibilityService) : VisitChoiceVerifier {
     private var lastCapture = 0L
-    suspend fun requireNormal(normal: UiNode, abnormal: UiNode) {
+    override suspend fun requireNormal(normal: UiNode, abnormal: UiNode) {
         if (Build.VERSION.SDK_INT < 30) throw VisitMismatch("此设备不支持本机视觉核验，已暂停")
         if (!normal.visible || !abnormal.visible || !normal.bounds.nonEmpty || !abnormal.bounds.nonEmpty) throw VisitMismatch("正常/异常按钮不完整可见，不能视觉核验")
         val remaining = 450 - (SystemClock.elapsedRealtime() - lastCapture)
@@ -21,7 +25,7 @@ class AndroidChoiceVision(private val service: AccessibilityService) {
         lastCapture = SystemClock.elapsedRealtime()
         val frame = capture(normal.bounds, abnormal.bounds)
         try {
-            when (OpenCvChoiceBackend.classify(frame, normal.bounds, abnormal.bounds)) {
+            when (withContext(Dispatchers.Default) { OpenCvChoiceBackend.classify(frame, normal.bounds, abnormal.bounds) }) {
                 ChoiceResult.NORMAL -> Unit
                 ChoiceResult.ABNORMAL -> throw VisitMismatch("视觉核验发现异常被选中，禁止继续")
                 ChoiceResult.UNKNOWN -> throw VisitMismatch("选中样式不匹配或被遮挡，视觉核验不确定，已暂停")

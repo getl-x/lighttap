@@ -17,8 +17,7 @@ class VisitRunner(
     private var settings = VisitSettings()
     private var worker: Job? = null
     private var generation = 0L
-    private var gapLeft = 0L
-    private var gapSince: Long? = null
+    private var lastSubmissionAt: Long? = null
     private var stepBudget = 30_000L
     private var stepSince: Long? = null
     private var initialized = false
@@ -28,7 +27,7 @@ class VisitRunner(
         val problem = plan.error()
         if (problem != null) { mutable.value = VisitState(message = problem); onError(problem); return }
         settings = plan
-        initialized = false; gapLeft = 0; gapSince = null; stepBudget = 30_000; stepSince = null
+        initialized = false; stepBudget = 30_000; stepSince = null
         mutable.value = VisitState(status = VisitStatus.RUNNING, execution = execution, message = "正在检查")
         launchWorker()
     }
@@ -50,17 +49,23 @@ class VisitRunner(
                 while (isActive && token == generation) {
                     val step = state.value.step
                     if (step == VisitStep.GAP) {
-                        runGap(token)
+                        driver.validate(VisitStep.GAP)
                         if (token != generation) return@launch
                         mutable.value = state.value.copy(step = VisitStep.FIND_LIST, status = VisitStatus.RUNNING, remainingWaitMs = 0)
                         stepBudget = 30_000
                         continue
                     }
+                    if (step == VisitStep.SUBMIT) awaitSubmissionSlot(token)
+                    ensureActive()
+                    if (token != generation) return@launch
+                    mutable.value = state.value.copy(message = "正在${step.title}", pendingSubmission = driver.pendingSubmission)
+                    if (step == VisitStep.WAIT_LIST && stepBudget == 30_000L) stepBudget = 120_000
                     stepSince = now()
                     val effect = withTimeout(stepBudget.coerceAtLeast(1)) {
                         driver.validate(step)
                         ensureActive()
-                        driver.execute(step)
+                        try { driver.execute(step) }
+                        finally { if (step == VisitStep.SUBMIT && !driver.managesSubmissionTiming) lastSubmissionAt = now() }
                     }
                     chargeStep()
                     ensureActive()
@@ -83,7 +88,6 @@ class VisitRunner(
                         return@launch
                     }
                     stepBudget = 30_000
-                    if (next == VisitStep.GAP) gapLeft = settings.waitMs
                     if (state.value.execution == VisitExecution.STEP_TEST) {
                         mutable.value = state.value.copy(status = VisitStatus.CHECKPOINT, message = "已自动暂停，请核验本步结果")
                         return@launch
@@ -92,14 +96,14 @@ class VisitRunner(
                     yield()
                 }
             } catch (cancelled: CancellationException) {
-                if (cancelled is TimeoutCancellationException && token == generation) fail("页面转换或核验超过 30 秒，请查看")
+                if (cancelled is TimeoutCancellationException && token == generation) fail(if (state.value.step == VisitStep.WAIT_LIST) "提交结果等待超时，请查看；保留保护标记，不会重复提交" else "页面转换或核验超过 30 秒，请查看")
                 else throw cancelled
             } catch (mismatch: VisitMismatch) {
                 if (token == generation) fail(mismatch.reason)
             } catch (_: Exception) {
                 if (token == generation) fail("当前步骤发生异常，已暂停；请查看页面")
             } finally {
-                if (token == generation) { chargeStep(); freezeGap() }
+                if (token == generation) chargeStep()
             }
         }
     }
@@ -115,34 +119,31 @@ class VisitRunner(
         VisitStep.WAIT_LIST -> VisitStep.GAP
         VisitStep.GAP -> VisitStep.FIND_LIST
     }
-    private suspend fun runGap(token: Long) {
-        driver.validate(VisitStep.GAP)
-        gapSince = now()
-        mutable.value = state.value.copy(status = VisitStatus.WAITING, remainingWaitMs = gapLeft, message = "本轮已完成，等待下一轮")
-        var lastCheck = now()
-        while (token == generation && currentCoroutineContext().isActive) {
-            val left = currentGap()
-            mutable.value = state.value.copy(remainingWaitMs = left)
-            if (left <= 0) break
-            if (now() - lastCheck >= 500) { driver.validate(VisitStep.GAP); lastCheck = now() }
-            delay(minOf(100, left))
-        }
-        freezeGap()
-        driver.validate(VisitStep.GAP)
+    private fun remainingSubmissionWait(): Long {
+        val local = lastSubmissionAt?.let { (settings.waitMs - (now() - it).coerceAtLeast(0)).coerceAtLeast(0) } ?: 0
+        return maxOf(local, driver.submissionWaitMs(settings.waitMs))
     }
-    private fun currentGap() = (gapLeft - (gapSince?.let { (now() - it).coerceAtLeast(0) } ?: 0)).coerceAtLeast(0)
-    private fun freezeGap() { gapLeft = currentGap(); gapSince = null }
+    private suspend fun awaitSubmissionSlot(token: Long) {
+        while (token == generation && currentCoroutineContext().isActive) {
+            val left = remainingSubmissionWait()
+            if (left <= 0) break
+            mutable.value = state.value.copy(status = VisitStatus.WAITING, remainingWaitMs = left, message = "填写完成，等待提交间隔")
+            delay(minOf(1_000, left))
+        }
+        currentCoroutineContext().ensureActive()
+        if (token == generation) mutable.value = state.value.copy(status = VisitStatus.RUNNING, remainingWaitMs = 0)
+    }
     private fun chargeStep() { stepSince?.let { stepBudget = (stepBudget - (now() - it).coerceAtLeast(0)).coerceAtLeast(0) }; stepSince = null }
     fun pause(reason: String = "用户暂停", error: Boolean = false) {
         if (!state.value.active || state.value.status == VisitStatus.FINISH_CONFIRM) return
-        freezeGap(); chargeStep(); generation++; worker?.cancel(); worker = null
-        mutable.value = state.value.copy(status = if (error) VisitStatus.ERROR else VisitStatus.PAUSED, remainingWaitMs = gapLeft, message = reason, pendingSubmission = driver.pendingSubmission,
+        chargeStep(); generation++; worker?.cancel(); worker = null
+        mutable.value = state.value.copy(status = if (error) VisitStatus.ERROR else VisitStatus.PAUSED, message = reason, pendingSubmission = driver.pendingSubmission,
             step = driver.recoveryStep ?: state.value.step)
         if (error) onError(reason)
     }
     private fun fail(reason: String) {
-        freezeGap(); chargeStep()
-        mutable.value = state.value.copy(status = VisitStatus.ERROR, remainingWaitMs = gapLeft, message = reason, pendingSubmission = driver.pendingSubmission,
+        chargeStep()
+        mutable.value = state.value.copy(status = VisitStatus.ERROR, message = reason, pendingSubmission = driver.pendingSubmission,
             step = driver.recoveryStep ?: state.value.step)
         onError(reason)
     }
@@ -153,7 +154,7 @@ class VisitRunner(
         driver.release()
     }
     fun stop() {
-        generation++; worker?.cancel(); worker = null; gapSince = null; gapLeft = 0; stepSince = null; initialized = false
+        generation++; worker?.cancel(); worker = null; stepSince = null; initialized = false
         driver.release()
         mutable.value = VisitState(message = if (driver.pendingSubmission) "已停止；存在未确认提交，下次仅核对结果" else "已停止", pendingSubmission = driver.pendingSubmission)
     }

@@ -12,17 +12,21 @@ import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import java.time.LocalDateTime
 
 class PrivateModel(private val context: Context) {
     val session = PrivateSession()
     private val preferences = context.getSharedPreferences("local_options", Context.MODE_PRIVATE)
+    internal val weekdayReminder = WeekdayRunReminder(
+        { preferences.getString("last_weekday_reminder_${it.name}", null) },
+        { slot, date -> preferences.edit().putString("last_weekday_reminder_${slot.name}", date).commit() },
+    )
     private var waitMigrationFailed = false
     private fun restoredWait(): String {
         val saved = preferences.getString("wait", null)
-        if (preferences.getBoolean("wait_default_60", false)) return saved ?: "60"
-        // Migrate the previous default once; keep other user-defined durations.
-        val updated = if (saved == null || saved == "62") "60" else saved
-        waitMigrationFailed = !preferences.edit().putString("wait", updated).putBoolean("wait_default_60", true).commit()
+        val updated = restoredSubmissionInterval(saved)
+        // Existing values below the rule are raised; longer user values survive.
+        if (saved != updated) waitMigrationFailed = !preferences.edit().putString("wait", updated).commit()
         return updated
     }
     val settings = MutableStateFlow(VisitSettings(
@@ -60,6 +64,8 @@ class PrivateModel(private val context: Context) {
 class PrivateController(private val service: ClickAccessibilityService, private val model: PrivateModel) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val overlay = PrivateOverlay(service, this)
+    private val workReminder = WorkReminderDisplay(service)
+    private val vibration = AndroidRunVibration(service)
     private val bridge = AndroidUiBridge(service, PrivateModel.TARGET) { overlay.bounds() }
     private val driver = AndroidVisitDriver(service, bridge, AndroidChoiceVision(service))
     private val runner = VisitRunner(scope, driver, { SystemClock.elapsedRealtime() }, { notifyPause() }, { model.confirmTest() })
@@ -67,9 +73,16 @@ class PrivateController(private val service: ClickAccessibilityService, private 
     private var shown = false
     private var probeJob: Job? = null
     init {
-        scope.launch { runner.state.collect { model.state.value = it; if (shown) overlay.render(it, mode) } }
+        scope.launchVisitRunReminder(runner.state, remind = { vibration.remind() }, cancelReminder = { vibration.cancel() })
+        scope.launch { runner.state.collect {
+            model.state.value = it
+            if (shown) overlay.render(it, mode)
+        } }
         scope.launch {
             while (isActive) {
+                model.weekdayReminder.claim(LocalDateTime.now(), runner.state.value)?.let { event ->
+                    showWorkReminder(event)
+                }
                 val taskId = model.session.taskId
                 if (model.session.unlocked.value && taskId != null) {
                     val tasks = service.getSystemService(android.app.ActivityManager::class.java).appTasks
@@ -123,6 +136,12 @@ class PrivateController(private val service: ClickAccessibilityService, private 
     fun pause(reason: String, error: Boolean = false) { if (runner.state.value.busy) runner.pause(reason, error) }
     fun stop() { probeJob?.cancel(); probeJob = null; runner.stop() }
     fun stopAndHide() { stop(); shown = false; overlay.clear() }
+    fun dismissWorkReminder() = workReminder.dismiss()
+    fun workReminderBounds() = workReminder.bounds()
+    internal fun showWorkReminder(event: WorkReminderEvent) {
+        workReminder.show(event)
+        vibration.remindBeforeBreak()
+    }
     fun openPanel() { pause("已返回设置页，请查看后手动继续"); service.openSettings() }
     fun foregroundChanged(packageName: String) {
         if (runner.state.value.busy && packageName.isNotBlank() && packageName != PrivateModel.TARGET && packageName != service.packageName) {
@@ -130,7 +149,7 @@ class PrivateController(private val service: ClickAccessibilityService, private 
             if (!inputMethod) pause("前台应用变化，已暂停，请查看", error = true)
         }
     }
-    fun disconnect() { stopAndHide(); scope.cancel() }
+    fun disconnect() { stopAndHide(); workReminder.detach(); scope.cancel() }
     private fun notifyPause() {
         val manager = service.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel("operation_status", "任务状态", NotificationManager.IMPORTANCE_DEFAULT))

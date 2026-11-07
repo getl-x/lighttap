@@ -2,10 +2,10 @@ package cn.lighttap.app
 
 enum class VisitRunMode { ONCE, COUNT, CONTINUOUS }
 enum class VisitExecution { FORMAL, STEP_TEST }
-data class VisitSettings(val targetPackage: String = "", val mode: VisitRunMode = VisitRunMode.ONCE, val countText: String = "1", val waitText: String = "60") {
+data class VisitSettings(val targetPackage: String = "", val mode: VisitRunMode = VisitRunMode.ONCE, val countText: String = "1", val waitText: String = DEFAULT_SUBMISSION_INTERVAL_SECONDS) {
     fun error(): String? = when {
         targetPackage.isBlank() -> "请先绑定目标应用"
-        !waitText.matches(Regex("[0-9]{1,5}")) || waitText.toLongOrNull() !in 0L..86_400L -> "等待时间须为 0～86400 的整数秒"
+        !waitText.matches(Regex("[0-9]{1,5}")) || waitText.toLongOrNull() !in 61L..86_400L -> "提交间隔须为 61～86400 的整数秒"
         mode == VisitRunMode.COUNT && (!countText.matches(Regex("[0-9]{1,7}")) || countText.toLongOrNull() !in 1L..1_000_000L) -> "轮数须为 1～1000000 的整数"
         else -> null
     }
@@ -22,7 +22,7 @@ enum class VisitStep(val title: String, val expected: String) {
     VERIFY_FORM("提交前核验", "记录、两字段和正常状态均已核验"),
     SUBMIT("提交一次", "提交仅派发一次，结果待确认"),
     WAIT_LIST("核验返回列表", "表单退出，原顶部记录移除，列表稳定"),
-    GAP("轮间等待", "倒计时结束后重新核验列表"),
+    GAP("开始下一轮", "重新核验列表后准备下一条"),
 }
 enum class VisitStatus { IDLE, RUNNING, WAITING, CHECKPOINT, PAUSED, ERROR, FINISH_CONFIRM, COMPLETED }
 data class VisitState(
@@ -40,11 +40,15 @@ data class VisitState(
     val busy get() = status == VisitStatus.RUNNING || status == VisitStatus.WAITING
     val nextLabel get() = if (step == VisitStep.SUBMIT) "继续：提交一次" else "继续下一步"
 }
-class VisitMismatch(val reason: String) : Exception(reason)
+open class VisitMismatch(val reason: String) : Exception(reason)
+/** A read was interrupted by WebView/window publication; no action has been sent. */
+class VisitReadPending(reason: String) : VisitMismatch(reason)
 data class VisitEffect(val repeat: Boolean = false, val message: String = "已核验")
 interface VisitDriver {
     val pendingSubmission: Boolean
     val recoveryStep: VisitStep? get() = if (pendingSubmission) VisitStep.WAIT_LIST else null
+    fun submissionWaitMs(intervalMs: Long): Long = 0
+    val managesSubmissionTiming: Boolean get() = false
     suspend fun begin()
     suspend fun validate(step: VisitStep)
     suspend fun execute(step: VisitStep): VisitEffect

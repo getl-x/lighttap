@@ -156,8 +156,9 @@ class DeviceActionsTest {
     @Test fun simultaneousTwoFingerInputStillWorks() {
         val (activity, canvas) = prepare(); val original = model.config.value
         var maximum = 0; var groups = 0
+        val events = mutableListOf<String>()
         val pos = IntArray(2)
-        main { canvas.getLocationOnScreen(pos); canvas.setOnTouchListener { _, e -> maximum = maxOf(maximum, e.pointerCount); if (e.actionMasked == MotionEvent.ACTION_DOWN) groups++; false } }
+        main { canvas.getLocationOnScreen(pos); canvas.setOnTouchListener { _, e -> maximum = maxOf(maximum, e.pointerCount); if (e.actionMasked == MotionEvent.ACTION_DOWN) groups++; events += "${e.actionMasked}:${e.eventTime}"; false } }
         try {
             main {
                 model.service.value!!.stopRun()
@@ -168,7 +169,7 @@ class DeviceActionsTest {
             main { model.service.value!!.toggleRun() }
             waitUntil("Two simultaneous rounds must complete") { model.runtime.value.status == RunStatus.IDLE && model.runtime.value.rounds == 2L }
             inst.waitForIdleSync(); SystemClock.sleep(200)
-            main { assertEquals("Maximum simultaneous pointers", 2, maximum); assertEquals("Delivered gesture groups", 2, groups) }
+            main { assertEquals("Maximum simultaneous pointers", 2, maximum); assertEquals("Delivered gesture groups; events=$events", 2, groups) }
         } finally { main { model.service.value?.hideOverlay(); model.edit { original }; canvas.setOnTouchListener(null); activity.finish() } }
     }
 }

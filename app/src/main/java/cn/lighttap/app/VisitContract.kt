@@ -23,31 +23,54 @@ data class UiNode(
     val bounds: UiBox = UiBox(0, 0, 1, 1),
 )
 data class UiTree(val packageName: String, val windowId: Int, val nodes: List<UiNode>) {
-    fun under(path: String) = nodes.filter { it.path == path || it.path.startsWith("$path/") }
+    private val byPath by lazy { nodes.associateBy { it.path } }
+    private val subtrees = mutableMapOf<String, List<UiNode>>()
+    private val labels = mutableMapOf<Pair<String, Boolean>, List<UiNode>>()
+    fun under(path: String) = subtrees.getOrPut(path) { nodes.filter { it.path == path || it.path.startsWith("$path/") } }
     fun ancestors(node: UiNode): List<UiNode> {
         val result = mutableListOf<UiNode>()
         var path = node.path
         while (true) {
-            nodes.singleOrNull { it.path == path }?.let { result += it }
+            byPath[path]?.let { result += it }
             if (!path.contains('/')) break
             path = path.substringBeforeLast('/')
         }
         return result
     }
-    fun exact(label: String, visibleOnly: Boolean = false): List<UiNode> {
+    fun exact(label: String, visibleOnly: Boolean = false): List<UiNode> = labels.getOrPut(label to visibleOnly) {
         val candidates = nodes.filter { canonicalLabel(it.text) == label && (!visibleOnly || (it.visible && it.bounds.nonEmpty)) }
-        return candidates.filter { node -> candidates.none { other -> other.path.startsWith(node.path + "/") } }
+        candidates.filter { node -> candidates.none { other -> other.path.startsWith(node.path + "/") } }
     }
     fun has(label: String) = exact(label).isNotEmpty()
-    fun node(path: String) = nodes.singleOrNull { it.path == path } ?: throw VisitMismatch("页面控件已变化")
+    fun node(path: String) = byPath[path] ?: throw VisitMismatch("页面控件已变化")
 }
 /** No record object overrides toString: error/status paths must never format business values. */
 class VisitRecord(val name: String, val address: String, val cardPath: String, val actionPath: String) {
-    val fingerprint: String get() = hashText(name + "\u0000" + address)
+    val fingerprint: String = hashText(name + "\u0000" + address)
     override fun toString() = "VisitRecord([private])"
 }
 fun canonicalLabel(text: String) = text.filterNot { it.isWhitespace() }
-fun hashText(text: String): String = MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
+fun hashText(text: String): String {
+    val alphabet = "0123456789abcdef"
+    val bytes = MessageDigest.getInstance("SHA-256").digest(text.toByteArray())
+    return buildString(bytes.size * 2) { bytes.forEach { byte ->
+        val value = byte.toInt() and 255
+        append(alphabet[value ushr 4]); append(alphabet[value and 15])
+    } }
+}
+/** WebView lazily exposes inline text leaves; they repeat their parent's text
+ * and carry no independent control state. Keep the parent and its real bounds. */
+fun withoutRedundantTextLeaves(nodes: List<UiNode>): List<UiNode> {
+    val byPath = nodes.associateBy { it.path }
+    val parents = nodes.map { it.path.substringBeforeLast('/', "") }.toSet()
+    return nodes.filterNot { node ->
+        val parent = byPath[node.path.substringBeforeLast('/', "")]
+        parent != null && node.path !in parents && node.className == "android.widget.TextView" &&
+            !node.clickable && !node.editable && !node.selected && !node.checked && !node.scrollable &&
+            node.enabled == parent.enabled && node.visible == parent.visible && node.viewId.isEmpty() &&
+            node.description.isEmpty() && node.text.isNotBlank() && canonicalLabel(node.text) == canonicalLabel(parent.text)
+    }
+}
 class VisitContract(val target: String) {
     fun target(tree: UiTree) {
         if (tree.packageName != target) throw VisitMismatch("当前前台不是已绑定的目标应用")
@@ -88,7 +111,11 @@ class VisitContract(val target: String) {
         val embedded = nodes.mapNotNull { prefix.matchEntire(it.text.trim())?.groupValues?.get(1)?.trim() }.distinct()
         if (embedded.size == 1) return embedded.single()
         if (embedded.size > 1) throw VisitMismatch("记录字段有歧义")
-        val marker = nodes.singleOrNull { isLabel(it.text, label) } ?: throw VisitMismatch("缺少记录核对字段")
+        val markers = nodes.filter { isLabel(it.text, label) }
+        // Match the outer row label, not its optional inline-text child. The
+        // adjacent value is a sibling of that outer label in flattened WebViews.
+        val marker = markers.filter { node -> markers.none { other -> node.path.startsWith(other.path + "/") } }.singleOrNull()
+            ?: throw VisitMismatch("缺少或无法唯一确定记录核对字段")
         // Web accessibility often flattens each label/value row into adjacent siblings.
         val siblingValues = nodes.filter { it.path.substringBeforeLast('/', "") == marker.path.substringBeforeLast('/', "") }
         val markerIndex = siblingValues.indexOfFirst { it.path == marker.path }

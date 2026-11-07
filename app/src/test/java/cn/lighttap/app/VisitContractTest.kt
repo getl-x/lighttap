@@ -80,6 +80,7 @@ class VisitContractTest {
             rows += UiNode("r/2/${offset+1}", text = "身 份 证 ：", bounds = UiBox(20, top + 40, 200, top + 70))
             rows += UiNode("r/2/${offset+2}", text = "示例凭证", bounds = UiBox(198, top + 40, 400, top + 70))
             rows += UiNode("r/2/${offset+3}", text = "居 住 地 址 ：", bounds = UiBox(20, top + 80, 200, top + 110))
+            if (i == 1) rows += UiNode("r/2/${offset+3}/0", text = "居 住 地 址 ：", bounds = UiBox(20, top + 82, 200, top + 108))
             rows += UiNode("r/2/${offset+4}", text = "测试地址" + i, bounds = UiBox(198, top + 80, 500, top + 110))
             rows += UiNode("r/2/${offset+5}", text = "0/1")
             rows += UiNode("r/2/${offset+6}", bounds = UiBox(300, top + 120, 680, top + 160))

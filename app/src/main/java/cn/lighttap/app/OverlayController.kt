@@ -5,6 +5,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -14,6 +15,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 
 /** Native overlay views keep accessibility windows independent of activity lifecycle. */
 class OverlayController(private val service: ClickAccessibilityService) {
@@ -28,6 +30,8 @@ class OverlayController(private val service: ClickAccessibilityService) {
     private var collapsed = false
     private val preferences = service.getSharedPreferences("ordinary_overlay", android.content.Context.MODE_PRIVATE)
     private val markers = mutableListOf<View>()
+    private var pendingMarkers: Runnable? = null
+    private var markersRemovedAt = 0L
     private fun dp(value: Int) = (value * service.resources.displayMetrics.density).roundToInt()
     private fun shape(color: Int, radius: Int) = GradientDrawable().apply { setColor(color); cornerRadius = dp(radius).toFloat() }
     // Raw display coordinates deliberately keep a physical left origin in every locale.
@@ -48,11 +52,24 @@ class OverlayController(private val service: ClickAccessibilityService) {
         runButton?.text = if (collapsed) when (state.status) { RunStatus.RUNNING -> "暂停"; RunStatus.PAUSED -> "继续"; else -> "开始" }
             else when (state.status) { RunStatus.RUNNING -> "Ⅱ 暂停"; RunStatus.PAUSED -> "▶ 继续"; else -> "▶ 开始" }
         addButton?.isEnabled = state.status != RunStatus.RUNNING && config.points.size < MAX_ACTIONS
-        val canEdit = state.status != RunStatus.RUNNING && !settingsVisible
+        val canEdit = state.status != RunStatus.RUNNING && !settingsVisible && !service.gestureInFlight
         if (lastConfig != config || editing != canEdit) {
+            val deferMarkers = canEdit && editing == false
             hideMarkers()
-            if (canEdit) config.points.forEachIndexed { index, point -> if (point.type != ActionType.WAIT) { addMarker(index, point); if (point.type == ActionType.SWIPE) addMarker(index, point, true) } }
-            lastConfig = config; editing = canEdit
+            lastConfig = config
+            fun reveal() {
+                config.points.forEachIndexed { index, point -> if (point.type != ActionType.WAIT) { addMarker(index, point); if (point.type == ActionType.SWIPE) addMarker(index, point, true) } }
+                editing = true
+            }
+            if (canEdit && deferMarkers) {
+                // The gesture callback can precede delivery to the target's UI
+                // thread. Restoring touchable marker windows immediately steals
+                // the final touch. Let input/window transactions settle first.
+                pendingMarkers = Runnable {
+                    pendingMarkers = null
+                    if (panel != null && lastConfig == config && service.appModel.overlayVisible.value && !service.appModel.settingsVisible.value && service.appModel.runtime.value.status != RunStatus.RUNNING && !service.gestureInFlight) reveal()
+                }.also { panel?.postDelayed(it, 150) }
+            } else if (canEdit) reveal()
         }
     }
     private fun buildPanel() {
@@ -198,7 +215,21 @@ class OverlayController(private val service: ClickAccessibilityService) {
             }
         }
     }
-    fun hideMarkers() { markers.forEach { runCatching { wm.removeViewImmediate(it) } }; markers.clear(); editing = false }
+    suspend fun awaitMarkersRemoved() {
+        // removeViewImmediate detaches locally before InputDispatcher receives
+        // the window update. Do not let the first gesture hit a stale marker.
+        val remaining = 150 - (SystemClock.uptimeMillis() - markersRemovedAt)
+        if (remaining > 0) delay(remaining)
+    }
+    fun hideMarkers() {
+        pendingMarkers?.let { panel?.removeCallbacks(it) }
+        pendingMarkers = null
+        val hadMarkers = markers.isNotEmpty()
+        markers.forEach { runCatching { wm.removeViewImmediate(it) } }
+        markers.clear()
+        if (hadMarkers) markersRemovedAt = SystemClock.uptimeMillis()
+        editing = false
+    }
     fun clear() {
         hideMarkers()
         panel?.let { runCatching { wm.removeViewImmediate(it) } }

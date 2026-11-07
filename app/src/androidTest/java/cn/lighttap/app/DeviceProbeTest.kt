@@ -7,6 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlinx.coroutines.runBlocking
 
 @RunWith(AndroidJUnit4::class)
 class DeviceProbeTest {
@@ -18,7 +19,7 @@ class DeviceProbeTest {
         while (model.service.value == null && SystemClock.elapsedRealtime() < deadline) Thread.sleep(100)
         var tree: UiTree? = null
         var problem: String? = null
-        instrument.runOnMainSync {
+        runBlocking {
             val service = model.service.value
             if (service == null) problem = "service_unavailable"
             else try { tree = AndroidUiBridge(service, PrivateModel.TARGET) { null }.capture() }

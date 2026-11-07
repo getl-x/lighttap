@@ -6,16 +6,23 @@ import android.graphics.Path
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlin.coroutines.resume
 
-class AndroidTapDispatcher(private val service: AccessibilityService, private val canTap: (List<ClickPoint>) -> Boolean = { true }) : TapDispatcher {
+class AndroidTapDispatcher(private val service: AccessibilityService, private val prepare: suspend () -> Unit = {}, private val canTap: (List<ClickPoint>) -> Boolean = { true }) : TapDispatcher {
     private val lock = Mutex()
+    private val sending = MutableStateFlow(false)
+    val inFlight: StateFlow<Boolean> = sending
     override suspend fun tap(points: List<ClickPoint>): Boolean = lock.withLock {
+        prepare()
         currentCoroutineContext().ensureActive()
         if (!canTap(points)) return@withLock false
         // A stopped run may leave one gesture in flight. Keep the lock until
         // its callback, so an immediate restart cannot overlap that gesture.
         val result = withContext(NonCancellable) {
+            sending.value = true
+            try {
             withTimeoutOrNull((points.maxOfOrNull { it.gestureDuration } ?: 50) + 2_000) {
                 suspendCancellableCoroutine { continuation ->
                     val gesture = GestureDescription.Builder().apply {
@@ -36,6 +43,7 @@ class AndroidTapDispatcher(private val service: AccessibilityService, private va
                     } catch (_: Exception) { if (continuation.isActive) continuation.resume(false) }
                 }
             } ?: false
+            } finally { sending.value = false }
         }
         currentCoroutineContext().ensureActive()
         result

@@ -21,8 +21,11 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.combine
 
 class ClickAccessibilityService : AccessibilityService() {
+    val visitSuccessSignals = VisitSuccessSignals()
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var engine: ClickEngine
+    private lateinit var tapDispatcher: AndroidTapDispatcher
+    val gestureInFlight: Boolean get() = connected && tapDispatcher.inFlight.value
     private lateinit var overlay: OverlayController
     private var connected = false
     private val capturedVolumeKeys = mutableSetOf<Int>()
@@ -42,16 +45,20 @@ class ClickAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         if (connected) return
         if (!scope.isActive) scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-        engine = ClickEngine(scope, AndroidTapDispatcher(this) { points ->
+        tapDispatcher = AndroidTapDispatcher(this, prepare = { overlay.awaitMarkersRemoved() }) { points ->
             val panel = overlay.bounds()
-            !getSystemService(KeyguardManager::class.java).isKeyguardLocked &&
+            engine.state.value.status == RunStatus.RUNNING &&
+                !getSystemService(KeyguardManager::class.java).isKeyguardLocked &&
                 getSystemService(PowerManager::class.java).isInteractive &&
                 points.none { panel?.intersects(it) == true }
-        })
+        }
+        engine = ClickEngine(scope, tapDispatcher)
         overlay = OverlayController(this)
         connected = true
         serviceInfo = serviceInfo.apply { flags = flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS }
-        if (Build.VERSION.SDK_INT >= 33) setCacheEnabled(false)
+        // Keep Android's batched prefetch. AndroidUiBridge invalidates it between
+        // snapshots, instead of forcing a Binder round trip for every child.
+        if (Build.VERSION.SDK_INT >= 33) setCacheEnabled(true)
         model.service.value = this
         model.privateModel.connect(this)
         updateScreen()
@@ -59,7 +66,7 @@ class ClickAccessibilityService : AccessibilityService() {
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(receiver, filter, RECEIVER_NOT_EXPORTED) else @Suppress("DEPRECATION") registerReceiver(receiver, filter)
         displayManager.registerDisplayListener(displayListener, null)
         scope.launch { engine.state.collect { model.runtime.value = it } }
-        scope.launch { combine(model.config, engine.state, model.overlayVisible, model.settingsVisible) { config, runtime, visible, settings -> overlay.render(config, runtime, visible, settings) }.collect {} }
+        scope.launch { combine(model.config, engine.state, model.overlayVisible, model.settingsVisible, tapDispatcher.inFlight) { config, runtime, visible, settings, _ -> overlay.render(config, runtime, visible, settings) }.collect {} }
         scope.launch { model.config.collect { config ->
             serviceInfo = serviceInfo.apply { flags = if (config.volumeKeys) flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS else flags and AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS.inv() }
         } }
@@ -140,6 +147,9 @@ class ClickAccessibilityService : AccessibilityService() {
     fun notice(text: String) { Toast.makeText(this, text, Toast.LENGTH_LONG).show() }
     private fun interrupt(message: String) { if (connected) { engine.fail(message); model.privateModel.controller?.pause(message, error = true) } }
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event != null && event.packageName?.toString() == PrivateModel.TARGET) {
+            visitSuccessSignals.observe(PrivateModel.TARGET, PrivateModel.TARGET, event.text.map { it.toString() }, android.os.SystemClock.elapsedRealtime())
+        }
         if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) model.privateModel.controller?.foregroundChanged(event.packageName?.toString().orEmpty())
     }
     override fun onTaskRemoved(rootIntent: Intent?) { model.privateModel.clearTask(); super.onTaskRemoved(rootIntent) }

@@ -16,12 +16,14 @@ class VisitRunnerTest {
         var latency = 0L
         var scrollRepeats = 0
         var fenceThenFail = false
+        val submissions = mutableListOf<Long>()
+        var time: () -> Long = { 0 }
         override suspend fun begin() = Unit
         override suspend fun validate(step: VisitStep) { if (step == rejectedValidation) throw VisitMismatch("校验不匹配") }
         override suspend fun execute(step: VisitStep): VisitEffect {
             if (step == rejected) throw VisitMismatch("步骤不匹配")
             actions += step
-            if (step == VisitStep.SUBMIT) { pendingSubmission = true; if (fenceThenFail) throw VisitMismatch("提交结果不明确") }
+            if (step == VisitStep.SUBMIT) { submissions += time(); pendingSubmission = true; if (fenceThenFail) throw VisitMismatch("提交结果不明确") }
             delay(latency)
             if (step == VisitStep.WAIT_LIST) pendingSubmission = false
             if (step == VisitStep.LOCATE_DESCRIPTION && scrollRepeats-- > 0) return VisitEffect(repeat = true)
@@ -29,7 +31,10 @@ class VisitRunnerTest {
         }
         override fun release() = Unit
     }
-    private fun TestScope.runner(driver: Driver, errors: MutableList<String> = mutableListOf(), confirmed: () -> Unit = {}) = VisitRunner(backgroundScope, driver, { testScheduler.currentTime }, { errors += it }, confirmed)
+    private fun TestScope.runner(driver: Driver, errors: MutableList<String> = mutableListOf(), confirmed: () -> Unit = {}): VisitRunner {
+        driver.time = { testScheduler.currentTime }
+        return VisitRunner(backgroundScope, driver, { testScheduler.currentTime }, { errors += it }, confirmed)
+    }
     @Test fun stepModeExecutesExactlyOneStepForEachContinue() = runTest {
         val d = Driver(); val e = runner(d)
         e.start(plan, VisitExecution.STEP_TEST); runCurrent()
@@ -62,28 +67,43 @@ class VisitRunnerTest {
         test.start(plan, VisitExecution.STEP_TEST); runCurrent(); repeat(8) { test.resume(); runCurrent() }
         assertEquals(a.actions, b.actions); assertEquals(VisitStatus.COMPLETED, formal.state.value.status)
     }
-    @Test fun defaultGapIsSixtySecondsAfterConfirmedReturn() = runTest {
+    @Test fun defaultIntervalPreparesNextFormAndSubmitsOnlyAfterSixtyOneSeconds() = runTest {
         val d = Driver(); val e = runner(d)
         e.start(plan.copy(mode = VisitRunMode.COUNT, countText = "2"), VisitExecution.FORMAL); runCurrent()
         assertEquals(VisitStatus.WAITING, e.state.value.status); assertEquals(1L, e.state.value.rounds)
-        assertEquals(60_000L, e.state.value.remainingWaitMs)
+        assertEquals(VisitStep.SUBMIT, e.state.value.step)
+        assertEquals(61_000L, e.state.value.remainingWaitMs)
+        assertEquals(2, d.actions.count { it == VisitStep.FILL_DESCRIPTION })
         val count = d.actions.size
-        advanceTimeBy(59_999); runCurrent(); assertEquals(count, d.actions.size)
+        advanceTimeBy(60_999); runCurrent(); assertEquals(count, d.actions.size)
         advanceTimeBy(1); runCurrent(); assertEquals(2L, e.state.value.rounds); assertEquals(VisitStatus.COMPLETED, e.state.value.status)
+        assertEquals(listOf(0L, 61_000L), d.submissions)
     }
-    @Test fun zeroGapRunsNextRoundWithoutExtraActions() = runTest {
+    @Test fun processingTimeCountsTowardIntervalWithoutAnExtraMinuteAfterReturn() = runTest {
         val d = Driver(); val e = runner(d)
-        e.start(plan.copy(mode = VisitRunMode.COUNT, countText = "2", waitText = "0"), VisitExecution.FORMAL); runCurrent()
+        d.latency = 1_000
+        e.start(plan.copy(mode = VisitRunMode.COUNT, countText = "2"), VisitExecution.FORMAL); runCurrent()
+        advanceTimeBy(80_000); runCurrent()
         assertEquals(18, d.actions.size); assertEquals(2L, e.state.value.rounds)
+        assertEquals(62_000L, d.submissions[1] - d.submissions[0])
     }
-    @Test fun pauseFreezesRemainingGapAndResumeUsesOnlyRemainder() = runTest {
+    @Test fun pauseKeepsCooldownRunningButNeverDispatchesUntilResumed() = runTest {
         val d = Driver(); val e = runner(d)
         e.start(plan.copy(mode = VisitRunMode.COUNT, countText = "2"), VisitExecution.FORMAL); runCurrent()
         advanceTimeBy(12_000); runCurrent(); e.pause("锁屏")
-        assertEquals(48_000L, e.state.value.remainingWaitMs)
-        advanceTimeBy(300_000); runCurrent(); assertEquals(9, d.actions.size)
-        e.resume(); runCurrent(); advanceTimeBy(47_999); runCurrent(); assertEquals(9, d.actions.size)
-        advanceTimeBy(1); runCurrent(); assertEquals(18, d.actions.size)
+        assertEquals(49_000L, e.state.value.remainingWaitMs)
+        val count = d.actions.size
+        advanceTimeBy(300_000); runCurrent(); assertEquals(count, d.actions.size)
+        e.resume(); runCurrent(); assertEquals(18, d.actions.size)
+        assertEquals(VisitStatus.COMPLETED, e.state.value.status)
+    }
+    @Test fun stopAndImmediateRestartCannotBypassSubmitCooldown() = runTest {
+        val d = Driver(); val e = runner(d)
+        e.start(plan, VisitExecution.FORMAL); runCurrent(); e.stop()
+        e.start(plan, VisitExecution.FORMAL); runCurrent()
+        assertEquals(1, d.submissions.size)
+        advanceTimeBy(60_999); runCurrent(); assertEquals(1, d.submissions.size)
+        advanceTimeBy(1); runCurrent(); assertEquals(2, d.submissions.size)
     }
     @Test fun failedSubmitDoesNotStartGapAndNeverSubmitsAgainOnResume() = runTest {
         val d = Driver().apply { fenceThenFail = true }; val e = runner(d)
@@ -132,7 +152,8 @@ class VisitRunnerTest {
     @Test fun stopResetsCountAndCountdown() = runTest {
         val d = Driver(); val e = runner(d)
         e.start(plan.copy(mode = VisitRunMode.CONTINUOUS), VisitExecution.FORMAL); runCurrent(); e.stop()
-        advanceTimeBy(120_000); runCurrent(); assertEquals(9, d.actions.size)
+        val count = d.actions.size
+        advanceTimeBy(120_000); runCurrent(); assertEquals(count, d.actions.size)
         assertEquals(0L, e.state.value.rounds); assertEquals(0L, e.state.value.remainingWaitMs)
     }
     @Test fun finalTestRequiresExplicitConfirmation() = runTest {
@@ -142,11 +163,11 @@ class VisitRunnerTest {
         e.finishTest(); assertEquals(1, confirmed); assertEquals(VisitStatus.COMPLETED, e.state.value.status)
     }
     @Test fun invalidWaitOrCountCannotStart() = runTest {
-        for (value in listOf("", "-1", "1.2", "86401", "abc", " 62", "999999999999")) {
+        for (value in listOf("", "0", "1", "60", "-1", "1.2", "86401", "abc", " 62", "999999999999")) {
             val d = Driver(); val e = runner(d)
             e.start(plan.copy(waitText = value), VisitExecution.FORMAL); runCurrent(); assertTrue(d.actions.isEmpty())
         }
-        assertNull(plan.copy(waitText = "0").error()); assertNull(plan.copy(waitText = "86400").error())
+        assertNull(plan.copy(waitText = "61").error()); assertNull(plan.copy(waitText = "86400").error())
         assertNotNull(plan.copy(mode = VisitRunMode.COUNT, countText = "0").error())
         assertEquals("01:02", countdown(62_000))
     }
