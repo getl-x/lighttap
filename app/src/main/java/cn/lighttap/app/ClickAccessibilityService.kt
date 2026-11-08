@@ -52,7 +52,9 @@ class ClickAccessibilityService : AccessibilityService() {
                 getSystemService(PowerManager::class.java).isInteractive &&
                 points.none { panel?.intersects(it) == true }
         }
-        engine = ClickEngine(scope, tapDispatcher)
+        engine = ClickEngine(scope, tapDispatcher, onCompleted = {
+            model.vibration.complete(model.completionVibration.mode.value)
+        })
         overlay = OverlayController(this)
         connected = true
         serviceInfo = serviceInfo.apply { flags = flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS }
@@ -162,6 +164,7 @@ class ClickAccessibilityService : AccessibilityService() {
         model.runtime.value = engine.state.value
         connected = false
         model.privateModel.disconnect()
+        model.vibration.cancel()
         model.service.value = null
         model.overlayVisible.value = false
         overlay.clear()

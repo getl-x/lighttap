@@ -16,15 +16,13 @@ internal class AndroidRunVibration(context: Context) {
         context.getSystemService(VibratorManager::class.java)?.defaultVibrator
     else context.getSystemService(Vibrator::class.java)
 
-    private var priorityUntil = 0L
-    fun remind(): Boolean = if (SystemClock.elapsedRealtime() < priorityUntil) false
-        else play(longArrayOf(0, 180, 140, 180))
-
-    fun remindBeforeBreak(): Boolean {
-        val pattern = longArrayOf(0, 450, 220, 450, 220, 450)
-        priorityUntil = SystemClock.elapsedRealtime() + pattern.sum()
-        return play(pattern)
+    private val controller = RunVibration({ SystemClock.elapsedRealtime() }, ::play) {
+        try { vibrator?.cancel() } catch (_: SecurityException) { /* Vibration is optional. */ }
     }
+    fun remind(): Boolean = controller.remind()
+    fun remindBeforeBreak(): Boolean = controller.remindBeforeBreak()
+    fun complete(mode: CompletionVibration): Boolean = controller.complete(mode)
+    fun cancelRunReminder() = controller.cancelRunReminder()
 
     private fun play(pattern: LongArray): Boolean {
         val device = vibrator?.takeIf { it.hasVibrator() } ?: return false
@@ -41,5 +39,5 @@ internal class AndroidRunVibration(context: Context) {
         } catch (_: SecurityException) { false }
     }
 
-    fun cancel() { vibrator?.cancel() }
+    fun cancel() = controller.cancel()
 }

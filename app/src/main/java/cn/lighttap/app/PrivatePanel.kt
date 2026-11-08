@@ -111,6 +111,7 @@ fun PrivatePanel(model: AppModel) {
                     Text("检查地址：松州园小区\n走访描述：无异常\n已有其他内容或状态异常时停止，不覆盖。", style = MaterialTheme.typography.bodySmall)
                 }
             }
+            CompletionVibrationSettingsCard(model)
             ToolCard("任务提醒") {
                 Text("正式运行每 5 分钟短震两下；暂停或结束后停止，继续后重新计时。", style = MaterialTheme.typography.bodySmall)
                 Text("工作日 11:15、17:00 正在正式运行时，震动三下并显示顶部提醒与无声通知。划掉任一提醒可同步关闭，任务仍会继续。", style = MaterialTheme.typography.bodySmall)

@@ -157,6 +157,7 @@ private fun MainScreen(model: AppModel, openAccessibility: () -> Unit, openTest:
             }
             ActionSettings(model, editable) { clearConfirm = true }
             AdvancedSettings(model, editable)
+            CompletionVibrationSettingsCard(model)
             Section("何时停止", "02") {
                 Column {
                     StopMode.entries.forEach { mode ->

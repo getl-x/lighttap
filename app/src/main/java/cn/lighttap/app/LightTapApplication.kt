@@ -18,6 +18,8 @@ class LightTapApplication : Application() {
 val Context.appModel: AppModel get() = (applicationContext as LightTapApplication).model
 
 class AppModel(context: Context) {
+    val completionVibration = CompletionVibrationSettings(context)
+    internal val vibration = AndroidRunVibration(context)
     val privateModel = PrivateModel(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val dataStore = context.settings

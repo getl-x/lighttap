@@ -11,6 +11,7 @@ class VisitRunner(
     private val now: () -> Long,
     private val onError: (String) -> Unit = {},
     private val onTestConfirmed: () -> Unit = {},
+    private val onCompleted: () -> Unit = {},
 ) {
     private val mutable = MutableStateFlow(VisitState())
     val state: StateFlow<VisitState> = mutable
@@ -75,6 +76,7 @@ class VisitRunner(
                         mutable.value = state.value.copy(status = VisitStatus.COMPLETED, lastStep = step.title, result = effect.message,
                             message = "待办已处理完", pendingSubmission = false, remainingWaitMs = 0)
                         driver.release()
+                        notifyCompleted()
                         return@launch
                     }
                     val next = nextStep(step, effect.repeat)
@@ -92,6 +94,7 @@ class VisitRunner(
                             status = if (state.value.execution == VisitExecution.STEP_TEST) VisitStatus.FINISH_CONFIRM else VisitStatus.COMPLETED,
                             message = if (state.value.execution == VisitExecution.STEP_TEST) "本轮测试完成，请核验并结束测试" else "已完成 $rounds 轮",
                         )
+                        if (state.value.status == VisitStatus.COMPLETED) notifyCompleted()
                         return@launch
                     }
                     stepBudget = 30_000
@@ -159,7 +162,9 @@ class VisitRunner(
         onTestConfirmed()
         mutable.value = state.value.copy(status = VisitStatus.COMPLETED, message = "本轮测试已确认结束")
         driver.release()
+        notifyCompleted()
     }
+    private fun notifyCompleted() { runCatching { onCompleted() } }
     fun stop() {
         generation++; worker?.cancel(); worker = null; stepSince = null; initialized = false
         driver.release()

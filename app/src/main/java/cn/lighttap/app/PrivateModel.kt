@@ -89,10 +89,11 @@ class PrivateController(private val service: ClickAccessibilityService, private 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val overlay = PrivateOverlay(service, this)
     private val workReminder = WorkReminderDisplay(service)
-    private val vibration = AndroidRunVibration(service)
+    private val vibration = service.appModel.vibration
     private val bridge = AndroidUiBridge(service, PrivateModel.TARGET) { overlay.bounds() }
     private val driver = AndroidVisitDriver(service, bridge, AndroidChoiceVision(service))
-    private val runner = VisitRunner(scope, driver, { SystemClock.elapsedRealtime() }, { notifyPause() }, { model.confirmTest() })
+    private val runner = VisitRunner(scope, driver, { SystemClock.elapsedRealtime() }, { notifyPause() }, { model.confirmTest() },
+        onCompleted = { vibration.complete(service.appModel.completionVibration.mode.value) })
     private var mode = VisitExecution.STEP_TEST
     private var shown = false
     private val probeCheck = ReadOnlyProbe(scope, { message ->
@@ -100,7 +101,7 @@ class PrivateController(private val service: ClickAccessibilityService, private 
         if (shown) overlay.render(runner.state.value.copy(message = message), mode)
     }, { service.notice(it) }, { driver.probe() })
     init {
-        scope.launchVisitRunReminder(runner.state, remind = { vibration.remind() }, cancelReminder = { vibration.cancel() })
+        scope.launchVisitRunReminder(runner.state, remind = { vibration.remind() }, cancelReminder = { vibration.cancelRunReminder() })
         scope.launch { runner.state.collect {
             model.record(model.state.value, it)
             model.state.value = it

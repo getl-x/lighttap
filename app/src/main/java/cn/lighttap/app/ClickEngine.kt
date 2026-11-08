@@ -22,6 +22,7 @@ class ClickEngine(
     private val scope: CoroutineScope,
     private val dispatcher: TapDispatcher,
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val onCompleted: () -> Unit = {},
 ) {
     private val mutableState = MutableStateFlow(RuntimeState())
     val state: StateFlow<RuntimeState> = mutableState
@@ -162,7 +163,11 @@ class ClickEngine(
     }
     fun stop(message: String = "已停止") { end(RunStatus.IDLE, message, reset = true) }
     fun fail(message: String) { end(RunStatus.ERROR, message, reset = false) }
-    private fun finish(message: String) { end(RunStatus.IDLE, message, reset = false) }
+    private fun finish(message: String) {
+        if (state.value.status !in setOf(RunStatus.RUNNING, RunStatus.PAUSED)) return
+        end(RunStatus.IDLE, message, reset = false)
+        runCatching { onCompleted() }
+    }
     private fun end(status: RunStatus, message: String, reset: Boolean) {
         freeze()
         generation++
