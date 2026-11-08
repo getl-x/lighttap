@@ -44,7 +44,7 @@ internal fun CompletionVibrationSettingsCard(model: AppModel) {
                     Row(
                         Modifier.fillMaxWidth().heightIn(min = 56.dp).selectable(
                             selected = mode == option, enabled = editable, role = Role.RadioButton,
-                            onClick = { model.completionVibration.select(option) },
+                            onClick = { model.vibration.cancel(); model.completionVibration.select(option) },
                         ), verticalAlignment = Alignment.CenterVertically,
                     ) {
                         RadioButton(selected = mode == option, onClick = null, enabled = editable)
@@ -54,9 +54,9 @@ internal fun CompletionVibrationSettingsCard(model: AppModel) {
                         }
                     }
                 }
-                TextButton(enabled = editable && mode != CompletionVibration.OFF, onClick = { preview(mode) }) { Text("试震当前模式") }
             }
         },
         confirmButton = { TextButton(onClick = { choosing = false }) { Text("完成") } },
+        dismissButton = { TextButton(enabled = editable && mode != CompletionVibration.OFF, onClick = { preview(mode) }) { Text("试震当前模式") } },
     )
 }

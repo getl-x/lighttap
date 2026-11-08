@@ -147,21 +147,23 @@ class CompletionReminderTest {
     }
 
     @Test fun completionHasPriorityOverOtherRemindersAndDisconnectCanCancelIt() {
-        var time = 0L
-        val played = mutableListOf<List<Long>>()
-        var cancellations = 0
-        val vibration = RunVibration({ time }, { played += it.toList(); true }, { cancellations++ })
-        assertTrue(vibration.remindBeforeBreak())
-        assertFalse(vibration.remind())
-        assertTrue(vibration.complete(CompletionVibration.LONG))
-        vibration.cancelRunReminder()
-        assertFalse(vibration.remind()); assertFalse(vibration.remindBeforeBreak())
-        assertEquals(0, cancellations)
-        time = 800
-        assertTrue(vibration.remind())
-        vibration.complete(CompletionVibration.DOUBLE); vibration.cancel()
-        assertEquals(1, cancellations)
-        assertTrue(vibration.remind())
+        for (mode in CompletionVibration.entries.filter { it != CompletionVibration.OFF }) {
+            var time = 0L
+            var cancellations = 0
+            val vibration = RunVibration({ time }, { true }, { cancellations++ })
+            assertTrue(vibration.remindBeforeBreak())
+            assertFalse(vibration.remind())
+            assertTrue(vibration.complete(mode))
+            time = mode.timings.sum() - 1
+            vibration.cancelRunReminder()
+            assertFalse(vibration.remind()); assertFalse(vibration.remindBeforeBreak())
+            assertEquals("${mode.name} must play to the end", 0, cancellations)
+            time++
+            assertTrue(vibration.remind())
+            vibration.complete(mode); vibration.cancel()
+            assertEquals(1, cancellations)
+            assertTrue(vibration.remind())
+        }
     }
 
     @Test fun offAndUnavailableVibratorDoNotPlayOrBlockExistingReminders() {

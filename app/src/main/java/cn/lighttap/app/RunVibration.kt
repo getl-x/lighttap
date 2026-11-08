@@ -5,7 +5,14 @@ enum class CompletionVibration(val title: String, val description: String, val t
     SHORT("短震一下", "轻快提示", listOf(0, 180)),
     DOUBLE("短震两下", "两次短震，默认模式", listOf(0, 180, 140, 180)),
     TRIPLE("短震三下", "三次短震，更易察觉", listOf(0, 180, 140, 180, 140, 180)),
-    LONG("长震一下", "持续震动 0.8 秒", listOf(0, 800));
+    LONG("长震一下", "持续震动 0.8 秒", listOf(0, 800)),
+    LONG_DOUBLE("长震两下", "两次 0.8 秒长震，间隔 0.3 秒", listOf(0, 800, 300, 800)),
+    LONG_TRIPLE("长震三下", "三次 0.8 秒长震，间隔 0.3 秒", listOf(0, 800, 300, 800, 300, 800)),
+    HEARTBEAT("心跳节奏", "咚咚 · 咚咚，两组心跳", listOf(0, 100, 120, 220, 500, 100, 120, 220)),
+    ACCELERATING("加速连震", "五次短震，间隔越来越短", listOf(0, 120, 450, 120, 300, 120, 180, 120, 80, 120)),
+    ALTERNATING("长短交替", "长—短—长—短，层次分明", listOf(0, 600, 180, 160, 180, 600, 180, 160)),
+    WAVE("波浪节奏", "短→中→长→中→短，时长起伏", listOf(0, 120, 120, 300, 120, 600, 120, 300, 120, 120)),
+    VICTORY("短短长", "短短长 · 短短长，两组庆祝节奏", listOf(0, 120, 100, 120, 100, 500, 350, 120, 100, 120, 100, 500));
 
     companion object {
         fun restored(value: String?): CompletionVibration = entries.firstOrNull { it.name == value } ?: DOUBLE
