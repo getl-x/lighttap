@@ -29,7 +29,7 @@ class AndroidUiBridge(private val service: AccessibilityService, override val ta
     override var lastClickDispatchMs: Long? = null
         private set
     private val reader = Dispatchers.IO.limitedParallelism(1)
-    private val prefetch = AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_DEPTH_FIRST or AccessibilityNodeInfo.FLAG_PREFETCH_UNINTERRUPTIBLE
+    private val prefetch = if (Build.VERSION.SDK_INT >= 33) AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_DEPTH_FIRST or AccessibilityNodeInfo.FLAG_PREFETCH_UNINTERRUPTIBLE else 0
     private fun guard() {
         if (service.getSystemService(KeyguardManager::class.java).isKeyguardLocked || !service.getSystemService(PowerManager::class.java).isInteractive) throw VisitMismatch("屏幕锁定或关闭，任务已暂停")
     }

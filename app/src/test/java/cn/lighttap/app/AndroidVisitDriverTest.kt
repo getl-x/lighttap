@@ -70,6 +70,77 @@ class AndroidVisitDriverTest {
     private fun TestScope.returnVision() = VisitReturnVision { ReturnFrame(ReturnVisual.CLEAR, testScheduler.currentTime) }
     private val plan = VisitSettings(targetPackage = "fixture")
 
+    @Test fun abnormalWithChangedFieldsReportsStateBeforeFieldMismatch() = runTest {
+        val ui = Ui { testScheduler.currentTime }
+        var visual = false
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ ->
+            visual = true
+            throw VisitMismatch("视觉核验发现异常被选中，禁止继续")
+        }, Fence(), returnVision(), { testScheduler.currentTime })
+        driver.execute(VisitStep.FIND_LIST); driver.execute(VisitStep.OPEN_FORM)
+        ui.form = ui.form.copy(nodes = ui.form.nodes.filterNot { it.path == "r/4/1" }.map { if (it.path == "r/6") it.copy(selected = false) else it })
+        for (step in listOf(VisitStep.WAIT_FORM, VisitStep.VERIFY_FORM, VisitStep.LOCATE_DESCRIPTION, VisitStep.FILL_ADDRESS)) {
+            try { driver.execute(step); fail("Abnormal must stop") } catch (e: VisitMismatch) { assertTrue(e.reason.contains("异常被选中")) }
+        }
+        try { driver.probe(); fail("Probe must report abnormal") } catch (e: VisitMismatch) { assertTrue(e.reason.contains("异常被选中")) }
+        assertTrue(visual); assertEquals(listOf("走访"), ui.actions)
+    }
+
+    @Test fun uncertainVisualRetriesFreshReadsWithoutRepeatingActions() = runTest {
+        val ui = Ui { testScheduler.currentTime }
+        ui.form = ui.form.copy(nodes = ui.form.nodes.map { if (it.path == "r/6") it.copy(selected = false) else it })
+        var attempts = 0
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> if (++attempts < 3) throw VisitChoiceUncertain() }, Fence(), returnVision(), { testScheduler.currentTime })
+        driver.execute(VisitStep.FIND_LIST); driver.execute(VisitStep.OPEN_FORM); driver.execute(VisitStep.WAIT_FORM)
+        assertEquals(3, attempts); assertEquals(listOf("走访"), ui.actions)
+    }
+
+    @Test fun persistentVisualUncertaintyStopsAfterThreeObservations() = runTest {
+        val ui = Ui { testScheduler.currentTime }.apply { opened = true }
+        ui.form = ui.form.copy(nodes = ui.form.nodes.map { if (it.path == "r/6") it.copy(selected = false) else it })
+        var attempts = 0
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> attempts++; throw VisitChoiceUncertain() }, Fence(), returnVision(), { testScheduler.currentTime })
+        try { driver.probe(); fail("Must remain uncertain") } catch (_: VisitChoiceUncertain) { }
+        assertEquals(3, attempts); assertTrue(ui.actions.isEmpty())
+    }
+
+    @Test fun recordChangeDuringVisualRetryIsRejectedBeforeAnotherScreenshot() = runTest {
+        val ui = Ui { testScheduler.currentTime }
+        ui.form = ui.form.copy(nodes = ui.form.nodes.map { if (it.path == "r/6") it.copy(selected = false) else it })
+        var attempts = 0
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ ->
+            attempts++
+            ui.form = ui.form.copy(nodes = ui.form.nodes.map { if (it.path == "r/2/1") it.copy(text = "另一记录") else it })
+            throw VisitChoiceUncertain()
+        }, Fence(), returnVision(), { testScheduler.currentTime })
+        driver.execute(VisitStep.FIND_LIST); driver.execute(VisitStep.OPEN_FORM)
+        try { driver.execute(VisitStep.WAIT_FORM); fail("Record changed") } catch (e: VisitMismatch) { assertTrue(e.reason.contains("记录")) }
+        assertEquals(1, attempts); assertEquals(listOf("走访"), ui.actions)
+    }
+
+    @Test fun confirmedEmptyListCompletesWithoutAnyActionOrTestCertification() = runTest {
+        val ui = Ui { testScheduler.currentTime }.apply { submitted = true }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, Fence(), returnVision(), { testScheduler.currentTime })
+        var certified = false
+        val runner = VisitRunner(backgroundScope, driver, { testScheduler.currentTime }, onTestConfirmed = { certified = true })
+        runner.start(plan, VisitExecution.STEP_TEST)
+        advanceTimeBy(2_000); runCurrent()
+        assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
+        assertEquals("待办已处理完", runner.state.value.message)
+        assertEquals(0L, runner.state.value.rounds)
+        assertTrue(ui.actions.isEmpty()); assertFalse(certified)
+    }
+    @Test fun emptyListWithGrayOverlayCannotFinish() = runTest {
+        val ui = Ui { testScheduler.currentTime }.apply { submitted = true }
+        val blocked = VisitReturnVision { ReturnFrame(ReturnVisual.BLOCKED, testScheduler.currentTime) }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, Fence(), blocked, { testScheduler.currentTime })
+        val runner = runner(driver)
+        runner.start(plan, VisitExecution.FORMAL)
+        advanceTimeBy(2_000); runCurrent()
+        assertEquals(VisitStatus.ERROR, runner.state.value.status)
+        assertTrue(ui.actions.isEmpty()); assertEquals(0L, runner.state.value.rounds)
+    }
+
     @Test fun formalRunWaitsForPublishedFormAndDelayedRemovalWithoutRepeatingActions() = runTest {
         val ui = Ui { testScheduler.currentTime }.apply { publicationDelay = 400; refreshDelay = 800 }
         val fence = Fence()

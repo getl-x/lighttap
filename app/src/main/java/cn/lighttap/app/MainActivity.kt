@@ -6,8 +6,9 @@ import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -31,12 +32,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
-private val Ink = Color(0xFF252339)
-private val Purple = Color(0xFF6255D9)
-private val Muted = Color(0xFF777589)
-private val Canvas = Color(0xFFF5F6FA)
+private val Ink = Color(LightTapColors.INK)
+private val Purple = Color(LightTapColors.PRIMARY)
+private val Muted = Color(LightTapColors.MUTED)
+private val Canvas = Color(LightTapColors.CANVAS)
 @Composable fun LightTapTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = lightColorScheme(primary = Purple, secondary = Color(0xFF2D7D64), background = Canvas, surface = Color.White, onBackground = Ink, onSurface = Ink), content = content)
+    MaterialTheme(colorScheme = lightColorScheme(primary = Purple, secondary = Color(LightTapColors.SUCCESS), error = Color(LightTapColors.ERROR), background = Canvas, surface = Color.White, onBackground = Ink, onSurface = Ink, onSurfaceVariant = Muted), content = content)
 }
 class MainActivity : ComponentActivity() {
     override fun onStart() {
@@ -51,7 +52,7 @@ class MainActivity : ComponentActivity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableLightTapEdgeToEdge()
         appModel.privateModel.session.attachTask(taskId, savedInstanceState != null)
         if (!appModel.privateModel.session.unlocked.value) appModel.privateModel.controller?.stopAndHide()
         setContent { LightTapTheme {
@@ -112,8 +113,8 @@ private fun MainScreen(model: AppModel, openAccessibility: () -> Unit, openTest:
                 Surface(color = Color(0xFFEAE7FF), shape = RoundedCornerShape(20.dp)) { Text("v${BuildConfig.VERSION_NAME}", Modifier.padding(horizontal = 12.dp, vertical = 6.dp), color = Purple, fontSize = 12.sp) }
             }
             Surface(color = Purple, shape = RoundedCornerShape(24.dp)) {
-                Column(Modifier.fillMaxWidth().padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(if (service != null) "准备好，轻松连点。" else "从一个点击点开始。", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                Column(Modifier.fillMaxWidth().padding(if (service != null) 18.dp else 22.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(if (service != null) "点击服务已就绪" else "从一个点击点开始。", color = Color.White, fontSize = if (service != null) 18.sp else 24.sp, fontWeight = FontWeight.Bold)
                     Text(if (service != null) "切换到目标应用，用悬浮控制条添加点位并开始。" else "开启点击服务后，即可在其他应用上设置点位。", color = Color(0xFFE4E0FF), fontSize = 13.sp, lineHeight = 21.sp)
                     Button(onClick = { if (service == null) explainService = true else service?.showOverlay() }, enabled = loaded, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Purple)) {
                         Text(when { !loaded -> "正在读取配置…"; service == null -> "开启点击服务"; visible -> "控制条已显示"; else -> "显示悬浮控制条" }, fontWeight = FontWeight.Bold)
@@ -159,8 +160,8 @@ private fun MainScreen(model: AppModel, openAccessibility: () -> Unit, openTest:
             Section("何时停止", "02") {
                 Column {
                     StopMode.entries.forEach { mode ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            RadioButton(selected = config.stopMode == mode, enabled = editable, onClick = { model.edit { it.copy(stopMode = mode) } })
+                        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).selectable(selected = config.stopMode == mode, enabled = editable, role = Role.RadioButton, onClick = { model.edit { it.copy(stopMode = mode) } }), verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = config.stopMode == mode, enabled = editable, onClick = null)
                             Text(mode.title, fontSize = 14.sp)
                         }
                     }
@@ -177,12 +178,7 @@ private fun MainScreen(model: AppModel, openAccessibility: () -> Unit, openTest:
         }
     }
     numberEdit?.let { edit ->
-        var text by remember(edit) { mutableStateOf(edit.value.toString()) }
-        val value = text.toLongOrNull()
-        val valid = value != null && value in edit.min..edit.max
-        AlertDialog(onDismissRequest = { numberEdit = null }, title = { Text(edit.title) }, text = {
-            OutlinedTextField(value = text, onValueChange = { input -> if (input.length <= 9 && input.all { it.isDigit() }) text = input }, label = { Text(edit.unit) }, supportingText = { Text("范围 ${edit.min}～${edit.max} ${edit.unit}") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true)
-        }, confirmButton = { TextButton(enabled = valid && editable, onClick = { if (valid) edit.apply(value!!); numberEdit = null }) { Text("保存") } }, dismissButton = { TextButton(onClick = { numberEdit = null }) { Text("取消") } })
+        NumberDialog(edit.title, edit.value, edit.min, edit.max, edit.unit, editable, { numberEdit = null }, edit.apply)
     }
     if (explainService) AlertDialog(onDismissRequest = { explainService = false }, title = { Text("开启点击服务") }, text = { Text("轻点使用无障碍服务，在你选择的位置模拟点击并显示悬浮控制条。\n\n仅按你启用的操作读取必要的界面控件；不录屏，不联网。请在系统设置中找到「轻点 · 点击服务」并手动开启。\n\n如果系统提示受限制，请在轻点的应用信息页中查看「允许受限制的设置」。") }, confirmButton = { TextButton(onClick = { explainService = false; openAccessibility() }) { Text("前往系统设置") } }, dismissButton = { TextButton(onClick = { explainService = false }) { Text("取消") } })
     if (clearConfirm) AlertDialog(onDismissRequest = { clearConfirm = false }, title = { Text("清空全部点位？") }, text = { Text("此操作会删除当前 ${config.points.size} 个点位。") }, confirmButton = { TextButton(enabled = editable, onClick = { model.edit { it.copy(points = emptyList(), screen = model.screen.value) }; clearConfirm = false }) { Text("清空") } }, dismissButton = { TextButton(onClick = { clearConfirm = false }) { Text("取消") } })

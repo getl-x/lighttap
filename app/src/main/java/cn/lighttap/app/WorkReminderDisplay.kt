@@ -12,6 +12,7 @@ import android.os.Build
 import android.view.*
 import android.widget.*
 import androidx.core.app.NotificationCompat
+import androidx.core.content.edit
 import java.time.LocalDate
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -35,7 +36,7 @@ internal class WorkReminderDisplay(private val service: ClickAccessibilityServic
 
     @SuppressLint("ClickableViewAccessibility")
     fun show(event: WorkReminderEvent) {
-        store.edit().putString("date", event.date.toString()).putString("slot", event.slot.name).commit()
+        store.edit { putString("date", event.date.toString()); putString("slot", event.slot.name) }
         val channel = NotificationChannel(CHANNEL, "下班前提醒（无声音）", NotificationManager.IMPORTANCE_DEFAULT).apply {
             setSound(null, null); enableVibration(false)
             description = "工作日 11:15、17:00 任务运行中提醒；手动划掉后清除"
@@ -61,11 +62,11 @@ internal class WorkReminderDisplay(private val service: ClickAccessibilityServic
             elevation = dp(8).toFloat()
         }
         val row = LinearLayout(service)
-        row.addView(TextView(service).apply { text = "轻点 · ${event.slot.label} 下班前提醒"; textSize = 12f; setTextColor(Color.rgb(160, 28, 40)); gravity = Gravity.CENTER_VERTICAL }, LinearLayout.LayoutParams(0, dp(28), 1f))
+        row.addView(TextView(service).apply { text = "轻点 · ${event.slot.label} 下班前提醒"; textSize = 12f; setTextColor(Color.rgb(160, 28, 40)); gravity = Gravity.CENTER_VERTICAL }, LinearLayout.LayoutParams(0, dp(48), 1f))
         row.addView(TextView(service).apply {
             text = "×"; textSize = 22f; gravity = Gravity.CENTER; contentDescription = "关闭下班前提醒"
             setTextColor(Color.DKGRAY); setOnClickListener { dismiss() }
-        }, LinearLayout.LayoutParams(dp(32), dp(28)))
+        }, LinearLayout.LayoutParams(dp(48), dp(48)))
         layout.addView(row)
         layout.addView(TextView(service).apply { text = "到点时仍在运行，请留意停止"; textSize = 14f; setTextColor(Color.rgb(45, 35, 40)) })
         var startX = 0f; var startY = 0f
@@ -103,7 +104,7 @@ internal class WorkReminderDisplay(private val service: ClickAccessibilityServic
         const val CHANNEL = "workday_reminder_silent"
         private const val STORE = "workday_reminder_display"
         fun clearStored(context: Context) {
-            context.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit().clear().commit()
+            context.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit { clear() }
             context.getSystemService(NotificationManager::class.java).cancel(ID)
         }
     }

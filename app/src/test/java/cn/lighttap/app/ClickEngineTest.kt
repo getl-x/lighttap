@@ -7,6 +7,30 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ClickEngineTest {
+    @Test fun longWaitAndPauseDoNotPollAndResumeKeepsExactRemainder() = runTest {
+        var clockReads = 0
+        val calls = mutableListOf<Long>()
+        val engine = ClickEngine(backgroundScope, TapDispatcher { calls += testScheduler.currentTime; true }, { clockReads++; testScheduler.currentTime })
+        engine.start(ClickConfig(points = listOf(ClickPoint(1, 10f, 10f, 10)), startDelayMs = 60_000, stopMode = StopMode.ROUNDS, roundLimit = 1))
+        advanceTimeBy(12_345); runCurrent(); engine.pause(); runCurrent()
+        assertEquals(47_655L, engine.state.value.waitRemainingMs)
+        val pausedReads = clockReads
+        advanceTimeBy(600_000); runCurrent()
+        assertEquals("Paused worker and ticker must both suspend", pausedReads, clockReads)
+        assertTrue("Whole-second labels must not poll every 20ms", pausedReads < 300)
+        engine.resume(); runCurrent()
+        advanceTimeBy(47_654); runCurrent(); assertTrue(calls.isEmpty())
+        advanceTimeBy(1); runCurrent(); assertEquals(listOf(660_000L), calls)
+    }
+    @Test fun editingPausedLongWaitDiscardsOldDeadlineImmediately() = runTest {
+        val calls = mutableListOf<List<Long>>()
+        val engine = engine(calls)
+        engine.start(ClickConfig(points = listOf(p1), startDelayMs = 60_000))
+        advanceTimeBy(500); runCurrent(); engine.pause(); runCurrent()
+        engine.configure(ClickConfig(points = listOf(p2), stopMode = StopMode.ROUNDS, roundLimit = 1))
+        engine.resume(); runCurrent()
+        assertEquals(listOf(listOf(2L)), calls)
+    }
     private val p1 = ClickPoint(1, 100f, 200f, 100)
     private val p2 = ClickPoint(2, 200f, 300f, 200)
     private val p3 = ClickPoint(3, 300f, 400f, 300)

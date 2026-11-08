@@ -30,6 +30,8 @@ class ClickEngine(
     private var ticker: Job? = null
     private var generation = 0L
     private var revision = 0L
+    private val wake = MutableStateFlow(0L)
+    private var waitTarget: Long? = null
     private var accumulatedMs = 0L
     private var activeSince: Long? = null
     private fun elapsed() = accumulatedMs + (activeSince?.let { (now() - it).coerceAtLeast(0) } ?: 0)
@@ -45,12 +47,15 @@ class ClickEngine(
         mutableState.value = RuntimeState(status = RunStatus.RUNNING, message = "正在点击")
         ticker = scope.launch {
             while (isActive && token == generation) {
+                awaitRunning()
                 refreshTime()
                 if (state.value.status == RunStatus.RUNNING && config.stopMode == StopMode.DURATION && elapsed() >= config.durationMs) {
                     finish("已达到运行时长")
                     break
                 }
-                delay(20)
+                val untilSecond = 1_000 - elapsed() % 1_000
+                val untilEnd = if (config.stopMode == StopMode.DURATION) (config.durationMs - elapsed()).coerceAtLeast(1) else Long.MAX_VALUE
+                waitOrWake(minOf(untilSecond, untilEnd))
             }
         }
         worker = scope.launch {
@@ -115,31 +120,44 @@ class ClickEngine(
         }
     }
     private suspend fun awaitRunning() { state.first { it.status == RunStatus.RUNNING } }
+    private suspend fun waitOrWake(ms: Long) {
+        val signal = wake.value
+        withTimeoutOrNull(ms) { wake.first { it != signal } }
+    }
     private suspend fun waitActive(ms: Long, version: Long, label: String? = null) {
         val target = elapsed() + ms
-        while (currentCoroutineContext().isActive && version == revision) {
-            awaitRunning()
-            val remaining = target - elapsed()
-            if (remaining <= 0) { mutableState.value = state.value.copy(waitRemainingMs = 0); return }
-            if (label != null) mutableState.value = state.value.copy(waitRemainingMs = remaining, message = "$label ${(remaining + 999) / 1000} 秒")
-            delay(minOf(remaining, 20))
-        }
+        waitTarget = target
+        try {
+            while (currentCoroutineContext().isActive && version == revision) {
+                awaitRunning()
+                if (version != revision) return
+                val remaining = target - elapsed()
+                if (remaining <= 0) { mutableState.value = state.value.copy(waitRemainingMs = 0); return }
+                if (label != null) mutableState.value = state.value.copy(waitRemainingMs = remaining, message = "$label ${(remaining + 999) / 1000} 秒")
+                // Action deadlines stay exact; whole-second labels only wake when their text changes.
+                waitOrWake(if (label == null) remaining else (remaining - 1) % 1_000 + 1)
+            }
+        } finally { waitTarget = null }
     }
     private fun refreshTime() { if (elapsed() - state.value.elapsedMs >= 100) mutableState.value = state.value.copy(elapsedMs = elapsed()) }
     fun pause() {
         if (state.value.status != RunStatus.RUNNING) return
         freeze()
-        mutableState.value = state.value.copy(status = RunStatus.PAUSED, elapsedMs = accumulatedMs, message = "已暂停，可调整点位")
+        mutableState.value = state.value.copy(status = RunStatus.PAUSED, elapsedMs = accumulatedMs,
+            waitRemainingMs = waitTarget?.let { (it - accumulatedMs).coerceAtLeast(0) } ?: 0, message = "已暂停，可调整点位")
+        wake.value++
     }
     fun resume() {
         if (state.value.status != RunStatus.PAUSED) return
         activeSince = now()
         mutableState.value = state.value.copy(status = RunStatus.RUNNING, message = "正在点击")
+        wake.value++
     }
     fun configure(plan: ClickConfig) {
         if (state.value.status == RunStatus.RUNNING || config == plan) return
         config = plan
         revision++
+        wake.value++
         mutableState.value = state.value.copy(nextIndex = 0, nextRepeat = 0, waitRemainingMs = 0)
     }
     fun stop(message: String = "已停止") { end(RunStatus.IDLE, message, reset = true) }

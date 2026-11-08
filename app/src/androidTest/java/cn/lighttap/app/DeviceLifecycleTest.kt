@@ -50,9 +50,16 @@ class DeviceLifecycleTest {
         val ordinary = ConfigCodec.encode(model.config.value)
         try {
             inst.runOnMainSync { model.privateModel.edit { it.copy(waitText = "83", mode = VisitRunMode.COUNT, countText = "3") } }
+            val deadline = SystemClock.elapsedRealtime() + 5_000
+            while (model.privateModel.saving.value && SystemClock.elapsedRealtime() < deadline) SystemClock.sleep(20)
+            assertFalse("Private settings must finish saving", model.privateModel.saving.value)
             val loaded = PrivateModel(context).settings.value
             assertEquals("83", loaded.waitText); assertEquals("3", loaded.countText); assertEquals(VisitRunMode.COUNT, loaded.mode)
             assertEquals(ordinary, ConfigCodec.encode(model.config.value))
-        } finally { inst.runOnMainSync { model.privateModel.edit { original } } }
+        } finally {
+            inst.runOnMainSync { model.privateModel.edit { original } }
+            val deadline = SystemClock.elapsedRealtime() + 5_000
+            while (model.privateModel.saving.value && SystemClock.elapsedRealtime() < deadline) SystemClock.sleep(20)
+        }
     }
 }

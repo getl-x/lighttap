@@ -29,7 +29,12 @@ class PrivateOverlay(private val service: ClickAccessibilityService, private val
         val wait = if (state.step == VisitStep.SUBMIT && state.remainingWaitMs > 0 && state.active) "距允许提交 ${countdown(state.remainingWaitMs)}\n" else ""
         status?.text = if (mode == VisitExecution.FORMAL) "${state.rounds} 轮 · ${state.step.title}\n$wait${state.message}"
             else "逐步测试 · ${state.rounds} 轮\n$wait${state.message}\n已执行：${state.lastStep}\n结果：${state.result}\n下一步：${state.step.title}\n预期：${state.step.expected}"
-        status?.setTextColor(if (state.status == VisitStatus.ERROR) Color.rgb(255, 190, 170) else Color.WHITE)
+        status?.setTextColor(when (state.status) {
+            VisitStatus.ERROR -> LightTapColors.OVERLAY_ERROR
+            VisitStatus.WAITING, VisitStatus.PAUSED, VisitStatus.CHECKPOINT -> LightTapColors.OVERLAY_WARNING
+            VisitStatus.RUNNING, VisitStatus.COMPLETED -> LightTapColors.OVERLAY_SUCCESS
+            else -> Color.WHITE
+        })
         action?.text = when {
             state.busy -> "暂停"
             state.status == VisitStatus.FINISH_CONFIRM -> "确认并结束测试"
@@ -44,39 +49,35 @@ class PrivateOverlay(private val service: ClickAccessibilityService, private val
         val compact = mode == VisitExecution.FORMAL
         val layout = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL; setPadding(dp(10), dp(8), dp(10), dp(8))
-            background = GradientDrawable().apply { setColor(Color.rgb(28, 29, 43)); cornerRadius = dp(16).toFloat() }
+            background = GradientDrawable().apply { setColor(LightTapColors.OVERLAY); cornerRadius = dp(18).toFloat() }
             elevation = dp(10).toFloat()
         }
         val title = TextView(service).apply { text = if (compact) "轻点 · 正式运行 · 拖动移动" else "轻点 · 拖动此处移动"; textSize = 12f; setTextColor(Color.rgb(200, 192, 255)); setPadding(0, dp(6), 0, dp(if (compact) 4 else 10)) }
         layout.addView(title)
-        status = TextView(service).apply { textSize = 11f; maxLines = if (compact) 3 else 11; layout.addView(this) }
-        if (compact) {
-            val controls = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL }
-            fun add(button: Button) { controls.addView(button, LinearLayout.LayoutParams(0, dp(40), 1f)) }
-            action = button("开始") { controller.toggle() }.also { add(it) }
-            add(button("停止") { controller.stop() })
-            probe = button("检查") { controller.probe() }.also { add(it) }
-            add(button("查看") { controller.openPanel() })
-            add(button("隐藏") { controller.stopAndHide() })
-            layout.addView(controls)
-        } else {
-            action = button("开始") { controller.toggle() }.also { layout.addView(it, LinearLayout.LayoutParams(-1, dp(44))) }
-            val row = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL }
-            row.addView(button("停止") { controller.stop() }, LinearLayout.LayoutParams(0, dp(42), 1f))
-            row.addView(button("查看") { controller.openPanel() }, LinearLayout.LayoutParams(0, dp(42), 1f))
-            layout.addView(row)
-            val bottom = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL }
-            probe = button("只读检查") { controller.probe() }.also { bottom.addView(it, LinearLayout.LayoutParams(0, dp(42), 1f)) }
-            bottom.addView(button("隐藏") { controller.stopAndHide() }, LinearLayout.LayoutParams(0, dp(42), 1f))
-            layout.addView(bottom)
+        status = TextView(service).apply { textSize = 12f; maxLines = if (compact) 4 else 12; setPadding(0, 0, 0, dp(6)); layout.addView(this) }
+        fun row(vararg buttons: Button) {
+            layout.addView(LinearLayout(service).apply {
+                orientation = LinearLayout.HORIZONTAL
+                buttons.forEach { addView(it, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(2), dp(3), dp(2), dp(3)) }) }
+            })
         }
+        action = button("开始", primary = true) { controller.toggle() }
+        if (compact) row(action!!, button("停止", destructive = true) { controller.stop() })
+        else {
+            row(action!!)
+            row(button("停止", destructive = true) { controller.stop() }, button("查看") { controller.openPanel() })
+        }
+        probe = button(if (compact) "检查" else "只读检查") { controller.probe() }
+        if (compact) row(probe!!, button("查看") { controller.openPanel() }, button("隐藏") { controller.stopAndHide() })
+        else row(probe!!, button("隐藏") { controller.stopAndHide() })
         val params = WindowManager.LayoutParams(dp(254), -2, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.LEFT; x = dp(8); y = dp(if (compact) 40 else 120) }
         view = layout; lp = params
         draggable(title, layout, params)
         wm.addView(layout, params)
     }
-    private fun button(label: String, run: () -> Unit) = Button(service).apply {
-        text = label; textSize = 11f; isAllCaps = false; minWidth = 0; minimumWidth = 0; setPadding(0, 0, 0, 0)
+    private fun button(label: String, primary: Boolean = false, destructive: Boolean = false, run: () -> Unit) = Button(service).apply {
+        text = label; textSize = 12f; isAllCaps = false
+        applyLightTapStyle(primary, destructive)
         setOnClickListener { run() }
     }
     @SuppressLint("ClickableViewAccessibility")

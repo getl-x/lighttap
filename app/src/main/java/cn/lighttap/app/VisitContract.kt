@@ -199,17 +199,20 @@ class VisitContract(val target: String) {
         return result
     }
     fun top(tree: UiTree): VisitRecord = records(tree).firstOrNull() ?: throw VisitMismatch("暂无待办，请用户查看")
-    fun form(tree: UiTree, record: VisitRecord?, visualFallback: Boolean = false) {
+    fun formIdentity(tree: UiTree, record: VisitRecord?) {
         target(tree)
         if (loading(tree)) throw VisitMismatch("表单仍在加载")
         if (!tree.has("新增") || !tree.has("走访记录")) throw VisitMismatch("不是预期的新增表单")
-        field(tree, "检查地址"); field(tree, "走访描述")
         if (record != null) {
             if (staticValue(tree, "r", "姓名") != record.name || staticValue(tree, "r", "居住地址") != record.address) throw VisitMismatch("表单记录与所选卡片不一致")
         }
+    }
+    fun form(tree: UiTree, record: VisitRecord?, visualFallback: Boolean = false) {
+        formIdentity(tree, record)
         if (visualFallback) {
             if (normalState(tree) == ChoiceResult.ABNORMAL) throw VisitMismatch("户籍状态明确异常，已暂停")
         } else normal(tree)
+        field(tree, "检查地址"); field(tree, "走访描述")
     }
     fun formFingerprint(tree: UiTree): String = hashText(staticValue(tree, "r", "姓名") + "\u0000" + staticValue(tree, "r", "居住地址"))
     fun normalState(tree: UiTree): ChoiceResult {

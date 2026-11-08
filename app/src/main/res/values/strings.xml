@@ -3,4 +3,6 @@
     <string name="service_description">按您设置的坐标、顺序和间隔模拟点击，并显示悬浮控制条。根据启用的操作读取必要的界面控件，数据仅在本机处理，不联网。请在使用前确认点位，随时通过悬浮控制条停止。</string>
     <string name="overlay_status">%1$d 轮 · %2$d 秒\n%3$s</string>
     <string name="marker_number">%1$d</string>
+    <string name="marker_start">%1$d起</string>
+    <string name="marker_end">%1$d终</string>
 </resources>

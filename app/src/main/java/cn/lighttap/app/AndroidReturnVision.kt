@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.SystemClock
 import android.view.Display
 import androidx.annotation.RequiresApi
+import androidx.core.graphics.scale
 import kotlinx.coroutines.*
 import kotlin.coroutines.resume
 
@@ -37,7 +38,7 @@ class AndroidReturnVision(private val service: AccessibilityService) : VisitRetu
                         val bottom = (software!!.height * .90).toInt()
                         require(top < bottom && left < right)
                         val crop = Bitmap.createBitmap(software!!, left, top, right - left, bottom - top)
-                        try { sample = Bitmap.createScaledBitmap(crop, 72, 96, false) }
+                        try { sample = crop.scale(72, 96, false) }
                         finally { if (crop !== sample) crop.recycle() }
                         sample!!.getPixels(pixels, 0, 72, 0, 0, 72, 96)
                         // Screenshot timestamps use uptime; convert to elapsedRealtime

@@ -28,7 +28,7 @@ class AndroidChoiceVision(private val service: AccessibilityService) : VisitChoi
             when (withContext(Dispatchers.Default) { OpenCvChoiceBackend.classify(frame, normal.bounds, abnormal.bounds) }) {
                 ChoiceResult.NORMAL -> Unit
                 ChoiceResult.ABNORMAL -> throw VisitMismatch("视觉核验发现异常被选中，禁止继续")
-                ChoiceResult.UNKNOWN -> throw VisitMismatch("选中样式不匹配或被遮挡，视觉核验不确定，已暂停")
+                ChoiceResult.UNKNOWN -> throw VisitChoiceUncertain()
             }
         } finally { frame.erase() }
     }

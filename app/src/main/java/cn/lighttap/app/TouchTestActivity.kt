@@ -10,7 +10,6 @@ import android.view.MotionEvent
 import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -21,7 +20,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 class TouchTestActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableLightTapEdgeToEdge()
         setContent { LightTapTheme {
             var groups by remember { mutableIntStateOf(0) }
             var maxPointers by remember { mutableIntStateOf(0) }

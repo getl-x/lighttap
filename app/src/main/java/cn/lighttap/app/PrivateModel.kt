@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.time.LocalDateTime
 
@@ -39,14 +40,36 @@ class PrivateModel(private val context: Context) {
     val probeResult = MutableStateFlow("尚未进行只读检查")
     val verified = MutableStateFlow(preferences.getBoolean("test_confirmed", false))
     val storageError = MutableStateFlow<String?>(if (waitMigrationFailed) "等待设置保存失败，请重新保存后开始" else null)
+    val saving = MutableStateFlow(false)
+    val history = MutableStateFlow<List<VisitHistoryEntry>>(emptyList())
+    private val settingsScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val settingsQueue = Channel<VisitSettings>(Channel.CONFLATED)
+    init {
+        settingsScope.launch {
+            for (updated in settingsQueue) {
+                val saved = withContext(Dispatchers.IO) {
+                    preferences.edit().putString("mode", updated.mode.name).putString("count", updated.countText).putString("wait", updated.waitText).commit()
+                }
+                if (updated == settings.value) {
+                    storageError.value = if (saved) null else "设置保存失败，请检查存储空间；禁止开始"
+                    saving.value = false
+                }
+            }
+        }
+    }
+    internal fun record(previous: VisitState, current: VisitState) {
+        // No tree, field values, record identity or screenshots enter this bounded in-memory log.
+        if (previous.status == current.status && previous.lastStep == current.lastStep && previous.rounds == current.rounds) return
+        history.value = (history.value + VisitHistoryEntry(System.currentTimeMillis(), current.rounds, current.step.title, current.message)).takeLast(30)
+    }
     var controller: PrivateController? = null
         private set
     fun edit(change: (VisitSettings) -> VisitSettings) {
         if (state.value.active) return
         val updated = change(settings.value)
         settings.value = updated
-        val saved = preferences.edit().putString("mode", updated.mode.name).putString("count", updated.countText).putString("wait", updated.waitText).commit()
-        storageError.value = if (saved) null else "设置保存失败，请检查存储空间；禁止开始"
+        saving.value = true
+        settingsQueue.trySend(updated)
     }
     fun connect(service: ClickAccessibilityService) {
         controller?.disconnect()
@@ -61,6 +84,7 @@ class PrivateModel(private val context: Context) {
     }
     companion object { const val TARGET = "cn.dreamdt.axchat.mztimsc" }
 }
+data class VisitHistoryEntry(val timeMs: Long, val rounds: Long, val step: String, val message: String)
 class PrivateController(private val service: ClickAccessibilityService, private val model: PrivateModel) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val overlay = PrivateOverlay(service, this)
@@ -71,10 +95,14 @@ class PrivateController(private val service: ClickAccessibilityService, private 
     private val runner = VisitRunner(scope, driver, { SystemClock.elapsedRealtime() }, { notifyPause() }, { model.confirmTest() })
     private var mode = VisitExecution.STEP_TEST
     private var shown = false
-    private var probeJob: Job? = null
+    private val probeCheck = ReadOnlyProbe(scope, { message ->
+        model.probeResult.value = message
+        if (shown) overlay.render(runner.state.value.copy(message = message), mode)
+    }, { service.notice(it) }, { driver.probe() })
     init {
         scope.launchVisitRunReminder(runner.state, remind = { vibration.remind() }, cancelReminder = { vibration.cancel() })
         scope.launch { runner.state.collect {
+            model.record(model.state.value, it)
             model.state.value = it
             if (shown) overlay.render(it, mode)
         } }
@@ -101,6 +129,8 @@ class PrivateController(private val service: ClickAccessibilityService, private 
         if (runner.state.value.active) { service.notice("请先停止当前任务"); return }
         if (service.appModel.runtime.value.status in setOf(RunStatus.RUNNING, RunStatus.PAUSED)) { service.notice("请先停止普通连点任务"); return }
         if (execution == VisitExecution.FORMAL && !model.verified.value) { service.notice("请先完成一次逐步测试并确认结果"); return }
+        if (Build.VERSION.SDK_INT < 30) { service.notice("专用功能需要 Android 11 及以上的画面核验能力"); return }
+        if (model.saving.value) { service.notice("设置正在保存，请稍后开始"); return }
         val error = model.settings.value.error() ?: model.storageError.value
         if (error != null) { service.notice(error); return }
         if (!runCatching { service.packageManager.getApplicationInfo(PrivateModel.TARGET, 0) }.isSuccess) { service.notice("未发现已绑定的目标应用"); return }
@@ -110,7 +140,7 @@ class PrivateController(private val service: ClickAccessibilityService, private 
     }
     fun toggle() {
         if (!authorized()) return
-        if (probeJob?.isActive == true) return
+        if (probeCheck.active) return
         val state = runner.state.value
         when {
             state.busy -> runner.pause()
@@ -120,21 +150,17 @@ class PrivateController(private val service: ClickAccessibilityService, private 
                 if (service.appModel.runtime.value.status in setOf(RunStatus.RUNNING, RunStatus.PAUSED)) { service.notice("请先停止普通连点"); return }
                 if (mode == VisitExecution.FORMAL && !model.verified.value) { service.notice("请先完成逐步测试"); return }
                 if (model.storageError.value != null) { service.notice("设置保存失败，禁止开始"); return }
+                if (model.saving.value) { service.notice("设置正在保存，请稍后开始"); return }
                 runner.start(model.settings.value, mode)
             }
         }
     }
     fun probe() {
-        if (!authorized() || runner.state.value.active || probeJob?.isActive == true) return
-        probeJob = scope.launch {
-            model.probeResult.value = "正在只读检查，未执行操作"
-            model.probeResult.value = try { withTimeout(5_000) { driver.probe() } } catch (e: VisitMismatch) { e.reason } catch (e: CancellationException) { throw e } catch (_: Exception) { "当前界面无法可靠读取，未执行操作" }
-            if (shown) overlay.render(runner.state.value.copy(message = model.probeResult.value), mode)
-            service.notice(model.probeResult.value)
-        }
+        if (!authorized() || runner.state.value.active) return
+        probeCheck.start()
     }
     fun pause(reason: String, error: Boolean = false) { if (runner.state.value.busy) runner.pause(reason, error) }
-    fun stop() { probeJob?.cancel(); probeJob = null; runner.stop() }
+    fun stop() { runner.stop(); probeCheck.stop() }
     fun stopAndHide() { stop(); shown = false; overlay.clear() }
     fun dismissWorkReminder() = workReminder.dismiss()
     fun workReminderBounds() = workReminder.bounds()

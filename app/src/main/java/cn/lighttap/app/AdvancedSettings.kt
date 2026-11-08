@@ -10,6 +10,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -22,7 +23,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-@Composable private fun ToolCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+@Composable internal fun ToolCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(title, fontWeight = FontWeight.Bold, fontSize = 16.sp); content()
@@ -38,16 +39,38 @@ import kotlinx.coroutines.withContext
     var renameId by remember { mutableStateOf<String?>(null) }
     var name by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
-    var exportData by remember { mutableStateOf("") }
+    val exports = remember { ProfileExportStore(java.io.File(context.noBackupFilesDir, "profile_exports")) }
+    var exportId by rememberSaveable { mutableStateOf<String?>(null) }
     var working by remember { mutableStateOf(false) }
     fun notice(text: String) { Toast.makeText(context, text, Toast.LENGTH_LONG).show() }
     val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        val id = exportId
         if (uri != null) scope.launch {
             working = true
-            val data = exportData
-            runCatching { withContext(Dispatchers.IO) { context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(data.toByteArray(Charsets.UTF_8)) } ?: error("无法打开目标文件") } }
-                .onSuccess { notice("方案已导出") }.onFailure { notice("导出失败，请检查文件位置和空间") }
-            working = false
+            try {
+                withContext(Dispatchers.IO) {
+                    val data = exports.read(id ?: error("导出内容已失效，请重新导出"))
+                    context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(data); it.flush() } ?: error("无法打开目标文件")
+                    exports.discard(id)
+                }
+                notice("方案已导出")
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { notice("导出失败，请重新导出并检查文件位置和空间") }
+            finally { working = false; exportId = null }
+        } else {
+            exportId = null
+            if (id != null) scope.launch(Dispatchers.IO) { exports.discard(id) }
+        }
+    }
+    fun export(profilesToExport: List<ClickProfile>, filename: String) {
+        scope.launch {
+            working = true
+            try {
+                exportId = withContext(Dispatchers.IO) { exports.prepare(profilesToExport) }
+                exporter.launch(filename)
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { exportId = null; notice("无法准备导出，请检查存储空间") }
+            finally { working = false }
         }
     }
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -78,11 +101,10 @@ import kotlinx.coroutines.withContext
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TextButton(enabled = editable && !working, onClick = {
-                exportData = ProfileCodec.encode(listOf(ClickProfile("current", "当前方案", model.config.value)))
-                exporter.launch("轻点-当前方案.json")
+                export(listOf(ClickProfile("current", "当前方案", model.config.value)), "轻点-当前方案.json")
             }) { Text("导出当前") }
             TextButton(enabled = editable && !working && profiles.isNotEmpty(), onClick = {
-                exportData = ProfileCodec.encode(profiles); exporter.launch("轻点-方案备份.json")
+                export(profiles, "轻点-方案备份.json")
             }) { Text("导出方案库") }
         }
         profiles.forEach { p ->
@@ -166,11 +188,19 @@ import kotlinx.coroutines.withContext
     Row(verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f)); TextButton(enabled = enabled, onClick = { open = true }) { Text("$value $unit ›") } }
     if (open) NumberDialog(title, value, min, max, unit, enabled, { open = false }, save)
 }
-@Composable private fun NumberDialog(title: String, value: Long, min: Long, max: Long, unit: String, enabled: Boolean, close: () -> Unit, save: (Long) -> Unit) {
+@Composable internal fun NumberDialog(title: String, value: Long, min: Long, max: Long, unit: String, enabled: Boolean, close: () -> Unit, save: (Long) -> Unit) {
     var input by remember { mutableStateOf(value.toString()) }
     val n = input.toLongOrNull(); val valid = n != null && n in min..max
     AlertDialog(onDismissRequest = close, title = { Text(title) }, text = {
-        DigitField(input, { input = it }, "$unit（$min～$max）", Modifier.fillMaxWidth())
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            DigitField(input, { input = it }, "$unit（$min～$max）", Modifier.fillMaxWidth())
+            if (!valid) Text("请输入 $min～$max 的整数", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            if (unit == "毫秒") Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(100L, 500L, 1_000L).filter { it in min..max }.forEach { preset ->
+                    SuggestionChip(onClick = { input = preset.toString() }, label = { Text(if (preset == 1_000L) "1 秒" else "$preset ms") })
+                }
+            }
+        }
     }, confirmButton = { TextButton(enabled = enabled && valid, onClick = { save(n!!); close() }) { Text("保存") } }, dismissButton = { TextButton(onClick = close) { Text("取消") } })
 }
 @Composable private fun DigitField(value: String, change: (String) -> Unit, label: String, modifier: Modifier = Modifier) {

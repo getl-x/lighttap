@@ -18,6 +18,8 @@ interface VisitSubmissionFence {
     fun recordClick(at: Long): Boolean = recordSubmission()
     fun confirmSubmission(at: Long): Boolean = recordSubmission()
 }
+// KTX edit returns Unit; these writes must return commit's durability result before any submission.
+@android.annotation.SuppressLint("UseKtx")
 private class AndroidSubmissionFence(context: Context) : VisitSubmissionFence {
     private val store = context.getSharedPreferences("operation_fence", Context.MODE_PRIVATE)
     private val resolver = context.contentResolver
@@ -93,10 +95,17 @@ class AndroidVisitDriver internal constructor(
     override suspend fun execute(step: VisitStep): VisitEffect = when (step) {
         VisitStep.FIND_LIST -> {
             val tree = stable()
-            selected = contract.top(tree)
-            if (selected?.fingerprint == pendingHash()) throw VisitMismatch("本条存在未确认提交，禁止再次处理")
-            scrolls = 0
-            VisitEffect(message = "顶部记录与按钮已唯一识别；尚未点击")
+            val records = contract.records(tree)
+            if (records.isEmpty()) {
+                if (pendingSubmission) throw VisitMismatch("仍有未确认提交，不能以空列表结束")
+                if (returnVision.inspect(tree).state != ReturnVisual.CLEAR || contract.records(stable()).isNotEmpty()) throw VisitMismatch("空列表画面尚未稳定，请查看后继续")
+                VisitEffect(message = "待办已处理完", emptyList = true)
+            } else {
+                selected = records.first()
+                if (selected?.fingerprint == pendingHash()) throw VisitMismatch("本条存在未确认提交，禁止再次处理")
+                scrolls = 0
+                VisitEffect(message = "顶部记录与按钮已唯一识别；尚未点击")
+            }
         }
         VisitStep.OPEN_FORM -> {
             val tree = stable()
@@ -114,14 +123,13 @@ class AndroidVisitDriver internal constructor(
         }
         VisitStep.FILL_ADDRESS -> fill("检查地址", VisitContract.ADDRESS)
         VisitStep.LOCATE_DESCRIPTION -> {
-            val tree = stable(); checkForm(tree)
+            val tree = checkedForm()
             val field = contract.field(tree, "走访描述")
             if (fullyVisible(tree, field)) VisitEffect(message = "描述输入框已可见，尚未填写")
             else {
                 if (scrolls >= 8) throw VisitMismatch("多次滚动后仍未定位描述框，停止适配")
                 val scroll = tree.ancestors(field).firstOrNull { it.scrollable && it.enabled && it.visible }
                     ?: throw VisitMismatch("找不到与描述框关联的可滚动控件")
-                verifyNormal(tree)
                 bridge.perform(tree, scroll, AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
                 scrolls++
                 VisitEffect(repeat = true, message = "仅滚动一次；请核验，下次继续重新定位")
@@ -168,18 +176,25 @@ class AndroidVisitDriver internal constructor(
     }
     private suspend fun verifyNormal(tree: UiTree): UiTree {
         var current = tree
-        repeat(3) {
+        repeat(3) { attempt ->
+            contract.formIdentity(current, selected)
             when (contract.normalState(current)) {
                 ChoiceResult.ABNORMAL -> throw VisitMismatch("户籍状态异常，禁止继续")
-                ChoiceResult.NORMAL -> return current
+                ChoiceResult.NORMAL -> { checkFormFields(current); return current }
                 ChoiceResult.UNKNOWN -> Unit
             }
             val normal = contract.choiceButton(current, "正常")
             val abnormal = contract.choiceButton(current, "异常")
-            vision.requireNormal(normal, abnormal)
+            try {
+                vision.requireNormal(normal, abnormal)
+            } catch (e: VisitChoiceUncertain) {
+                if (attempt == 2) throw e
+                delay(350)
+                current = stable()
+                return@repeat
+            }
             val observed = observations.read()
-            contract.form(observed, selected, visualFallback = true)
-            contract.allowedFields(observed)
+            checkFormFields(observed)
             // Ignore unrelated WebView changes, but never reuse a visual result
             // if the window or either choice control has moved/changed.
             if (observed.windowId == current.windowId && contract.choiceButton(observed, "正常") == normal && contract.choiceButton(observed, "异常") == abnormal) return observed
@@ -188,8 +203,13 @@ class AndroidVisitDriver internal constructor(
         throw VisitMismatch("状态控件持续变化，请查看后继续")
     }
     private suspend fun checkedForm(): UiTree {
-        val tree = stable(); checkForm(tree)
+        val tree = stable()
+        contract.formIdentity(tree, selected ?: throw VisitMismatch("缺少本轮记录，不能操作"))
         return verifyNormal(tree)
+    }
+    private fun checkFormFields(tree: UiTree) {
+        contract.form(tree, selected, visualFallback = true)
+        contract.allowedFields(tree)
     }
     private fun checkForm(tree: UiTree) {
         contract.form(tree, selected ?: throw VisitMismatch("缺少本轮记录，不能操作"), visualFallback = true)
@@ -275,8 +295,12 @@ class AndroidVisitDriver internal constructor(
             if (!contract.loading(tree)) {
                 if (form && tree.has("新增")) {
                     val ready = stable()
-                    // A WebView may publish its title before the form inputs.
-                    if (formPublished(ready)) { checkForm(ready); return ready }
+                    // Wait for the state controls as well as the title. Check the
+                    // state before normal-only inputs: abnormal can change their layout.
+                    if (formPublished(ready)) {
+                        contract.formIdentity(ready, selected ?: throw VisitMismatch("缺少本轮记录，不能操作"))
+                        return ready
+                    }
                 }
                 if (!form && tree.has("待办") && !tree.has("新增")) {
                     val ready = stable()
@@ -303,12 +327,11 @@ class AndroidVisitDriver internal constructor(
     }
     private fun formPublished(tree: UiTree): Boolean = try {
         tree.has("新增") && tree.has("走访记录") && !contract.loading(tree) &&
-            contract.field(tree, "检查地址").editable && contract.field(tree, "走访描述").editable &&
             tree.has("正常") && tree.has("异常")
     } catch (_: VisitMismatch) { false }
     suspend fun probe(): String {
         val tree = stable()
-        if (tree.has("新增")) { contract.form(tree, null, visualFallback = true); verifyNormal(tree); contract.allowedFields(tree); return "表单控件可读；未填写、未提交" }
+        if (tree.has("新增")) { contract.formIdentity(tree, null); verifyNormal(tree); return "表单控件可读；未填写、未提交" }
         val top = contract.top(tree)
         if (top.fingerprint.isEmpty()) throw VisitMismatch("记录核对失败")
         return "列表、顶部记录和走访按钮可读；未点击"

@@ -13,6 +13,7 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.content.edit
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
@@ -79,7 +80,7 @@ class OverlayController(private val service: ClickAccessibilityService) {
         val layout = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(8), dp(8), dp(8), dp(8))
-            background = shape(Color.rgb(28, 29, 43), 18)
+            background = shape(LightTapColors.OVERLAY, 18)
             elevation = dp(12).toFloat()
         }
         val title = TextView(service).apply {
@@ -91,12 +92,12 @@ class OverlayController(private val service: ClickAccessibilityService) {
         statusText = if (!collapsed) TextView(service).apply {
             textSize = 11f; setTextColor(Color.WHITE); maxLines = 4; setPadding(dp(4), 0, dp(4), dp(4)); layout.addView(this)
         } else null
-        fun row(vararg views: View) { layout.addView(LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; views.forEach { addView(it, LinearLayout.LayoutParams(0, dp(46), 1f)) } }) }
+        fun row(vararg views: View) { layout.addView(LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; views.forEach { addView(it, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(2), dp(3), dp(2), dp(3)) }) } }) }
         runButton = button("开始") { service.toggleRun() }
         if (collapsed) {
-            layout.addView(runButton, LinearLayout.LayoutParams(-1, dp(46)))
-            layout.addView(button("停止") { service.stopRun() }, LinearLayout.LayoutParams(-1, dp(46)))
-            layout.addView(button("展开") { toggleCollapsed() }, LinearLayout.LayoutParams(-1, dp(42)))
+            layout.addView(runButton, LinearLayout.LayoutParams(-1, dp(52)))
+            layout.addView(button("停止") { service.stopRun() }, LinearLayout.LayoutParams(-1, dp(52)))
+            layout.addView(button("展开") { toggleCollapsed() }, LinearLayout.LayoutParams(-1, dp(52)))
         } else {
             row(runButton!!, button("■ 停止") { service.stopRun() })
             addButton = button("＋ 点") { service.addPoint() }
@@ -112,9 +113,7 @@ class OverlayController(private val service: ClickAccessibilityService) {
     @SuppressLint("ClickableViewAccessibility")
     private fun button(label: String, action: () -> Unit) = Button(service).apply {
         text = label; textSize = 12f; isAllCaps = false
-        setTextColor(Color.WHITE); minWidth = 0; minimumWidth = 0
-        setPadding(0, 0, 0, 0)
-        backgroundTintList = android.content.res.ColorStateList.valueOf(Color.rgb(67, 62, 116))
+        applyLightTapStyle(primary = label == "开始", destructive = label.contains("停止"))
         var activatedOnDown = false
         setOnClickListener { if (activatedOnDown) activatedOnDown = false else action() }
         setOnTouchListener { view, event ->
@@ -133,7 +132,7 @@ class OverlayController(private val service: ClickAccessibilityService) {
     private fun toggleCollapsed() {
         panel?.let { runCatching { wm.removeViewImmediate(it) } }
         panel = null; collapsed = !collapsed
-        preferences.edit().putBoolean("collapsed", collapsed).apply()
+        preferences.edit { putBoolean("collapsed", collapsed) }
         buildPanel()
         render(service.appModel.config.value, service.appModel.runtime.value, true)
     }
@@ -161,7 +160,7 @@ class OverlayController(private val service: ClickAccessibilityService) {
         val size = dp(service.appModel.config.value.markerSizeDp)
         val px = if (endpoint) point.endX else point.x; val py = if (endpoint) point.endY else point.y
         val marker = TextView(service).apply {
-            text = "${index + 1}${if (point.type == ActionType.SWIPE) if (endpoint) "终" else "起" else ""}"; textSize = 14f; gravity = Gravity.CENTER
+            text = service.getString(if (point.type != ActionType.SWIPE) R.string.marker_number else if (endpoint) R.string.marker_end else R.string.marker_start, index + 1); textSize = 14f; gravity = Gravity.CENTER
             setTypeface(null, Typeface.BOLD); setTextColor(Color.WHITE)
             contentDescription = "点击点 ${index + 1}，长按删除，拖动调整"
             background = shape(if (!point.enabled) Color.GRAY else if (endpoint) Color.rgb(35, 129, 105) else Color.argb(225, 93, 84, 217), 36).apply { setStroke(dp(2), Color.WHITE) }
@@ -207,7 +206,7 @@ class OverlayController(private val service: ClickAccessibilityService) {
                     if (dragged && moved != null && view.isAttachedToWindow) {
                         val location = IntArray(2); view.getLocationOnScreen(location)
                         moved((location[0] + view.width / 2f) to (location[1] + view.height / 2f))
-                    } else if (dragged && moved == null) preferences.edit().putInt("x", lp.x).putInt("y", lp.y).apply()
+                    } else if (dragged && moved == null) preferences.edit { putInt("x", lp.x); putInt("y", lp.y) }
                     else if (!dragged) handle.performClick()
                     true
                 }

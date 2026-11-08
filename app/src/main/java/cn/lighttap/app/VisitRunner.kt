@@ -70,6 +70,13 @@ class VisitRunner(
                     chargeStep()
                     ensureActive()
                     if (token != generation) return@launch
+                    if (effect.emptyList) {
+                        if (step != VisitStep.FIND_LIST || driver.pendingSubmission) throw VisitMismatch("空列表结束条件不匹配")
+                        mutable.value = state.value.copy(status = VisitStatus.COMPLETED, lastStep = step.title, result = effect.message,
+                            message = "待办已处理完", pendingSubmission = false, remainingWaitMs = 0)
+                        driver.release()
+                        return@launch
+                    }
                     val next = nextStep(step, effect.repeat)
                     var rounds = state.value.rounds
                     if (step == VisitStep.WAIT_LIST && !effect.repeat) rounds++
