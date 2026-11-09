@@ -53,6 +53,15 @@ class AndroidVisitDriverTest {
         val actions = mutableListOf<String>()
         var failAfterSubmit = false
         var listOverride: UiTree? = null
+        var ignoredNavigationClicks = 0
+        var navigationClicks = 0
+        var rejectedNavigationClicks = 0
+        override suspend fun openVisit(tree: UiTree, node: UiNode) {
+            navigationClicks++
+            if (rejectedNavigationClicks > 0) { rejectedNavigationClicks--; throw VisitNavigationRejected() }
+            if (ignoredNavigationClicks > 0) { ignoredNavigationClicks--; actions += "走访"; return }
+            perform(tree, node, AccessibilityNodeInfo.ACTION_CLICK)
+        }
         override suspend fun capture(): UiTree {
             listOverride?.let { return it }
             if (submitted) return if (now() < readyAt) listTree() else listTree().copy(nodes = listTree().nodes.take(3) + UiNode("r/empty", text = "暂无待办"))
@@ -72,6 +81,84 @@ class AndroidVisitDriverTest {
     private fun TestScope.runner(driver: VisitDriver) = VisitRunner(backgroundScope, driver, { testScheduler.currentTime })
     private fun TestScope.returnVision() = VisitReturnVision { ReturnFrame(ReturnVisual.CLEAR, testScheduler.currentTime) }
     private val plan = VisitSettings(targetPackage = "fixture")
+
+    @Test fun ignoredOpenClickDoesNotCountAndContinueActuallyRetriesNavigation() = runTest {
+        val ui = Ui { testScheduler.currentTime }.apply { ignoredNavigationClicks = 1 }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, Fence(), returnVision(), { testScheduler.currentTime })
+        val runner = runner(driver)
+        runner.start(plan, VisitExecution.FORMAL)
+        advanceTimeBy(6_000); runCurrent()
+        assertEquals(VisitStatus.ERROR, runner.state.value.status)
+        assertEquals(VisitStep.OPEN_FORM, runner.state.value.step)
+        assertEquals(0L, runner.state.value.rounds)
+        assertTrue(runner.state.value.message.contains("未打开表单"))
+        assertEquals(listOf("走访"), ui.actions)
+        assertEquals(1, ui.navigationClicks)
+        runner.resume(); advanceTimeBy(3_000); runCurrent()
+        assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
+        assertEquals(1L, runner.state.value.rounds)
+        assertEquals(2, ui.navigationClicks)
+        assertEquals(1, ui.actions.count { it == "提交" })
+    }
+
+    @Test fun manuallyOpenedMatchingFormOnContinueIsNotClickedAgain() = runTest {
+        val ui = Ui { testScheduler.currentTime }.apply { ignoredNavigationClicks = 1 }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, Fence(), returnVision(), { testScheduler.currentTime })
+        val runner = runner(driver)
+        runner.start(plan, VisitExecution.FORMAL)
+        advanceTimeBy(6_000); runCurrent()
+        assertEquals(VisitStatus.ERROR, runner.state.value.status)
+        ui.opened = true
+        runner.resume(); advanceTimeBy(3_000); runCurrent()
+        assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
+        assertEquals(1, ui.navigationClicks)
+        assertEquals(1, ui.actions.count { it == "提交" })
+    }
+
+    @Test fun rejectedNodeActionCanRetryWithoutWaitingForAFormThatWasNeverOpened() = runTest {
+        val ui = Ui { testScheduler.currentTime }.apply { rejectedNavigationClicks = 1 }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, Fence(), returnVision(), { testScheduler.currentTime })
+        val runner = runner(driver)
+        runner.start(plan, VisitExecution.FORMAL)
+        advanceTimeBy(2_000); runCurrent()
+        assertEquals(VisitStatus.ERROR, runner.state.value.status)
+        assertEquals(VisitStep.OPEN_FORM, runner.state.value.step)
+        assertEquals(0L, runner.state.value.rounds)
+        assertTrue(ui.actions.isEmpty())
+        runner.resume(); advanceTimeBy(3_000); runCurrent()
+        assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
+        assertEquals(1, ui.actions.count { it == "走访" })
+        assertEquals(1, ui.actions.count { it == "提交" })
+    }
+
+    @Test fun manuallyOpenedDifferentRecordIsRejectedWithoutAnotherClickOrSubmit() = runTest {
+        val ui = Ui { testScheduler.currentTime }.apply { ignoredNavigationClicks = 1 }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, Fence(), returnVision(), { testScheduler.currentTime })
+        val runner = runner(driver)
+        runner.start(plan, VisitExecution.FORMAL)
+        advanceTimeBy(6_000); runCurrent()
+        ui.opened = true
+        ui.form = ui.form.copy(nodes = ui.form.nodes.map { if (it.path == "r/2/1") it.copy(text = "样例乙") else it })
+        runner.resume(); advanceTimeBy(1_000); runCurrent()
+        assertEquals(VisitStatus.ERROR, runner.state.value.status)
+        assertEquals(0L, runner.state.value.rounds)
+        assertEquals(1, ui.navigationClicks)
+        assertEquals(listOf("走访"), ui.actions)
+    }
+
+    @Test fun sourceListWithLoadingDoesNotTriggerAnotherNavigationClick() = runTest {
+        val page = listTree().copy(nodes = listTree().nodes + UiNode("r/loading", className = "android.widget.ProgressBar"))
+        val ui = Ui { testScheduler.currentTime }.apply { ignoredNavigationClicks = 1 }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, Fence(), returnVision(), { testScheduler.currentTime })
+        driver.execute(VisitStep.FIND_LIST); driver.execute(VisitStep.OPEN_FORM)
+        ui.listOverride = page
+        val waiting = backgroundScope.launch { driver.execute(VisitStep.WAIT_FORM) }
+        advanceTimeBy(8_000); runCurrent()
+        assertTrue(waiting.isActive)
+        assertEquals(1, ui.navigationClicks)
+        assertEquals(listOf("走访"), ui.actions)
+        waiting.cancelAndJoin()
+    }
 
     private fun expandedList(): UiTree {
         val first = listTree()

@@ -9,7 +9,7 @@ fun interface VisitDiagnostics {
 
 enum class VisitDebugKind {
     ARM, START, RESUME, PAUSE, STOP, STEP_START, STEP_DONE, WAIT, ERROR, COMPLETE, PROBE,
-    CAPTURE, STABILITY, ACTION, LIST, RETURN_CHECK, RETURN_CONFIRMED, CHOICE_CHECK,
+    CAPTURE, STABILITY, ACTION, NAVIGATION_CHECK, LIST, RETURN_CHECK, RETURN_CONFIRMED, CHOICE_CHECK,
 }
 enum class VisitDebugAction { CLICK, FILL, SCROLL, OTHER }
 
@@ -45,6 +45,7 @@ data class VisitDebugEvent(
     val attempt: Int? = null,
     val action: VisitDebugAction? = null,
     val submit: Boolean? = null,
+    val navigation: Boolean? = null,
     val ok: Boolean? = null,
     val reason: String? = null,
     val delta: VisitSnapshotDelta? = null,
@@ -65,6 +66,7 @@ data class VisitDebugEvent(
         normal?.let { put("normal", it) }; successHint?.let { put("successHint", it) }
         attempt?.let { put("attempt", it) }; action?.let { put("action", it.name) }
         submit?.let { put("submit", it) }; ok?.let { put("ok", it) }
+        navigation?.let { put("navigation", it) }
         reason?.let { put("reason", safeVisitDebugReason(it)) }
         delta?.let { put("delta", JSONObject().put("added", it.added).put("removed", it.removed)
             .put("text", it.text).put("description", it.description).put("geometry", it.geometry)
@@ -92,6 +94,7 @@ private val DEBUG_REASONS = setOf(
     "执行前页面发生变化，已暂停", "目标控件不可操作", "悬浮内容遮挡目标控件，请移开或收起后继续",
     "执行前界面不可读", "执行前目标窗口已变化", "目标控件已失效", "执行前控件内容已变化",
     "执行前控件位置或状态已变化", "本次点击未确认完成，已暂停且不会自动重试", "系统未确认本次控件操作，已暂停",
+    "系统未接受走访控件点击，请查看后继续", "走访点击后仍在待办页，未打开表单；继续将重新识别并点击走访",
     "无法读取当前界面", "页面控件已变化", "未识别到唯一待办页签", "列表页结构不匹配",
     "无法确认当前选中待办页签", "列表仍在加载，请稍后由用户继续", "未读到走访控件，无法可靠识别网页内容",
     "走访按钮与记录按钮不能唯一关联", "列表顺序结构不能确定", "平铺记录边界有歧义",

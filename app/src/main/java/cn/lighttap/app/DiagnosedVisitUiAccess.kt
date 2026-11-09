@@ -46,4 +46,18 @@ class DiagnosedVisitUiAccess(
             throw e
         }
     }
+    override suspend fun openVisit(tree: UiTree, node: UiNode) {
+        val start = now()
+        diagnostics.record(VisitDebugEvent(VisitDebugKind.ACTION, action = VisitDebugAction.CLICK, submit = false, navigation = true))
+        try {
+            delegate.openVisit(tree, node)
+            diagnostics.record(VisitDebugEvent(VisitDebugKind.ACTION, action = VisitDebugAction.CLICK, submit = false,
+                navigation = true, durationMs = now() - start, ok = true))
+        } catch (e: Exception) {
+            diagnostics.record(VisitDebugEvent(VisitDebugKind.ACTION, action = VisitDebugAction.CLICK, submit = false,
+                navigation = true, durationMs = now() - start, ok = false,
+                reason = if (e is CancellationException) "操作已取消" else (e as? VisitMismatch)?.reason ?: "当前步骤发生异常，已暂停；请查看页面"))
+            throw e
+        }
+    }
 }
