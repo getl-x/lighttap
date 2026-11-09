@@ -22,6 +22,12 @@ data class UiNode(
     val showingHint: Boolean = false,
     val bounds: UiBox = UiBox(0, 0, 1, 1),
 )
+
+/** Labels may move from text to accessibility descriptions after a UI rewrite.
+ * Never interpret an input's hint/description as its entered business value. */
+internal val UiNode.readableText: String get() = if (!editable && text.isBlank()) description else text
+private val controlBoundaries = setOf("待办", "已完成", "正常", "异常", "走访", "走访记录", "提交", "姓名", "身份证", "居住地址", "检查地址", "走访描述")
+private fun undecoratedLabel(text: String) = canonicalLabel(text).trim('*', '＊').removeSuffix("：").removeSuffix(":").trim('*', '＊')
 data class UiTree(val packageName: String, val windowId: Int, val nodes: List<UiNode>) {
     private val byPath by lazy { nodes.associateBy { it.path } }
     private val subtrees = mutableMapOf<String, List<UiNode>>()
@@ -38,11 +44,22 @@ data class UiTree(val packageName: String, val windowId: Int, val nodes: List<Ui
         return result
     }
     fun exact(label: String, visibleOnly: Boolean = false): List<UiNode> = labels.getOrPut(label to visibleOnly) {
-        val candidates = nodes.filter { canonicalLabel(it.text) == label && (!visibleOnly || (it.visible && it.bounds.nonEmpty)) }
+        val candidates = nodes.filter { !it.editable && canonicalLabel(it.readableText) == label && (!visibleOnly || (it.visible && it.bounds.nonEmpty)) }
         candidates.filter { node -> candidates.none { other -> other.path.startsWith(node.path + "/") } }
     }
     fun has(label: String) = exact(label).isNotEmpty()
     fun node(path: String) = byPath[path] ?: throw VisitMismatch("页面控件已变化")
+    /** Stop at a semantic boundary, rather than a fixed number of wrapper views.
+     * A selected/clickable group containing both alternatives is not one control. */
+    internal fun controlAncestors(node: UiNode, alternatives: Set<String>): List<UiNode> {
+        val boundaries = alternatives + controlBoundaries
+        val expected = undecoratedLabel(node.readableText)
+        return ancestors(node).takeWhile { parent ->
+            parent.path != "r" && under(parent.path).none {
+                it.editable || (undecoratedLabel(it.readableText) in boundaries && undecoratedLabel(it.readableText) != expected)
+            }
+        }
+    }
 }
 /** No record object overrides toString: error/status paths must never format business values. */
 class VisitRecord(val name: String, val address: String, val cardPath: String, val actionPath: String) {
@@ -76,28 +93,30 @@ class VisitContract(val target: String) {
         if (tree.packageName != target) throw VisitMismatch("当前前台不是已绑定的目标应用")
         if (tree.nodes.isEmpty()) throw VisitMismatch("无法读取当前界面")
     }
-    fun loading(tree: UiTree): Boolean = tree.nodes.any { it.visible && (it.className.endsWith("ProgressBar") || it.text.trim() in setOf("加载中", "加载中...", "加载中…", "正在加载")) }
-    private fun leafTexts(tree: UiTree, path: String): List<UiNode> = tree.under(path).filter { n -> n.text.isNotBlank() && !n.editable && tree.nodes.none { it.path.startsWith(n.path + "/") && it.text.trim() == n.text.trim() } }
-    private fun isLabel(text: String, label: String): Boolean = canonicalLabel(text).removeSuffix("：").removeSuffix(":") == label
+    fun loading(tree: UiTree): Boolean = tree.nodes.any { it.visible && (it.className.endsWith("ProgressBar") || it.readableText.trim() in setOf("加载中", "加载中...", "加载中…", "正在加载")) }
+    private fun leafTexts(tree: UiTree, path: String): List<UiNode> = tree.under(path).filter { n -> n.readableText.isNotBlank() && !n.editable && tree.nodes.none { it.path.startsWith(n.path + "/") && it.readableText.trim() == n.readableText.trim() } }
+    private fun isLabel(text: String, label: String): Boolean = undecoratedLabel(text) == label
     private fun labels(tree: UiTree, label: String): List<UiNode> {
-        val nodes = tree.nodes.filter { isLabel(it.text, label) }
+        val nodes = tree.nodes.filter { !it.editable && isLabel(it.readableText, label) }
         return nodes.filter { node -> nodes.none { other -> other.path.startsWith(node.path + "/") } }
     }
     fun field(tree: UiTree, label: String): UiNode {
         val labelNode = labels(tree, label).singleOrNull() ?: throw VisitMismatch("字段标签缺失或不唯一：$label")
         val fieldLabels = setOf("检查地址", "走访描述", "居住地址", "姓名", "身份证")
-        for (ancestor in tree.ancestors(labelNode).take(5)) {
+        for (ancestor in tree.ancestors(labelNode)) {
             val nodes = tree.under(ancestor.path)
             val inputs = nodes.filter { it.editable }
-            if (inputs.size == 1 && nodes.none { n -> fieldLabels.any { other -> other != label && isLabel(n.text, other) } }) return inputs.single()
+            if (inputs.size == 1 && nodes.none { n -> !n.editable && fieldLabels.any { other -> other != label && isLabel(n.readableText, other) } }) return inputs.single()
             if (inputs.size > 1) {
                 // The observed WebView flattens section headings and their inputs.
                 val marker = nodes.indexOfFirst { it.path == labelNode.path }
                 if (marker >= 0) {
-                    val boundary = ((marker + 1) until nodes.size).firstOrNull { i -> fieldLabels.any { other -> other != label && isLabel(nodes[i].text, other) } } ?: nodes.size
+                    val boundary = ((marker + 1) until nodes.size).firstOrNull { i -> !nodes[i].editable && fieldLabels.any { other -> other != label && isLabel(nodes[i].readableText, other) } } ?: nodes.size
                     val candidates = nodes.subList(marker + 1, boundary).filter { it.editable }
                     if (candidates.size == 1) return candidates.single()
                 }
+                // Do not escape an ambiguous local section and accidentally
+                // select one of its inputs using a wider document ordering.
                 break
             }
         }
@@ -108,10 +127,10 @@ class VisitContract(val target: String) {
     private fun staticValue(tree: UiTree, path: String, label: String): String {
         val nodes = tree.under(path)
         val prefix = Regex("^" + label.map { Regex.escape(it.toString()) }.joinToString("\\s*") + "\\s*[：:]\\s*(.+)$", RegexOption.DOT_MATCHES_ALL)
-        val embedded = nodes.mapNotNull { prefix.matchEntire(it.text.trim())?.groupValues?.get(1)?.trim() }.distinct()
+        val embedded = nodes.filterNot { it.editable }.mapNotNull { prefix.matchEntire(it.readableText.trim())?.groupValues?.get(1)?.trim() }.distinct()
         if (embedded.size == 1) return embedded.single()
         if (embedded.size > 1) throw VisitMismatch("记录字段有歧义")
-        val markers = nodes.filter { isLabel(it.text, label) }
+        val markers = nodes.filter { !it.editable && isLabel(it.readableText, label) }
         // Match the outer row label, not its optional inline-text child. The
         // adjacent value is a sibling of that outer label in flattened WebViews.
         val marker = markers.filter { node -> markers.none { other -> node.path.startsWith(other.path + "/") } }.singleOrNull()
@@ -122,12 +141,15 @@ class VisitContract(val target: String) {
         if (markerIndex >= 0 && markerIndex + 1 < siblingValues.size) {
             val next = siblingValues[markerIndex + 1]
             val supportedLabels = setOf("姓名", "身份证", "居住地址", "检查地址", "走访描述")
-            if (next.text.isNotBlank() && !next.editable && supportedLabels.none { isLabel(next.text, it) } && next.bounds.top == marker.bounds.top && next.bounds.left >= marker.bounds.right - 8) return next.text.trim()
+            val overlap = minOf(next.bounds.bottom, marker.bounds.bottom) - maxOf(next.bounds.top, marker.bounds.top)
+            val rowHeight = minOf(next.bounds.bottom-next.bounds.top, marker.bounds.bottom-marker.bounds.top)
+            if (next.readableText.isNotBlank() && !next.editable && supportedLabels.none { isLabel(next.readableText, it) } &&
+                overlap > 0 && overlap * 2 >= rowHeight && next.bounds.left >= marker.bounds.right - 8) return next.readableText.trim()
         }
-        for (ancestor in tree.ancestors(marker).take(4)) {
-            if (!ancestor.path.startsWith(path)) break
-            val leaves = leafTexts(tree, ancestor.path).filter { it.path != marker.path && !isLabel(it.text, label) }
-            if (leaves.size == 1) return leaves.single().text.trim()
+        for (ancestor in tree.ancestors(marker)) {
+            if (ancestor.path != path && !ancestor.path.startsWith("$path/")) break
+            val leaves = leafTexts(tree, ancestor.path).filter { it.path != marker.path && !isLabel(it.readableText, label) }
+            if (leaves.size == 1) return leaves.single().readableText.trim()
             if (leaves.size > 1) break
         }
         throw VisitMismatch("无法确定记录核对字段")
@@ -140,12 +162,12 @@ class VisitContract(val target: String) {
         target(tree)
         val pending = tree.exact("待办", true).singleOrNull() ?: throw VisitMismatch("未识别到唯一待办页签")
         if (!tree.has("已完成")) throw VisitMismatch("列表页结构不匹配")
-        val selected = tree.ancestors(pending).take(3).any { it.selected || it.checked }
+        val selected = tree.controlAncestors(pending, setOf("待办", "已完成")).any { it.selected || it.checked }
         if (!selected) throw VisitMismatch("无法确认当前选中待办页签")
         if (loading(tree)) throw VisitMismatch("列表仍在加载，请稍后由用户继续")
         val actions = tree.exact("走访", true)
         if (actions.isEmpty()) {
-            if (tree.nodes.any { it.visible && it.text.trim() in setOf("暂无数据", "暂无待办", "暂无待办记录") }) return emptyList()
+            if (tree.nodes.any { it.visible && it.readableText.trim() in setOf("暂无数据", "暂无待办", "暂无待办记录") }) return emptyList()
             throw VisitMismatch("未读到走访控件，无法可靠识别网页内容")
         }
         val result = actions.map { action ->
@@ -153,7 +175,7 @@ class VisitContract(val target: String) {
             fun historyCount(parent: UiNode) = tree.exact("走访记录").count { it.path == parent.path || it.path.startsWith(parent.path + "/") }
             val card = tree.ancestors(action).firstOrNull { parent ->
                 val nodes = tree.under(parent.path)
-                visitCount(parent) == 1 && historyCount(parent) == 1 && nodes.any { isLabel(it.text, "居住地址") || canonicalLabel(it.text).startsWith("居住地址：") || canonicalLabel(it.text).startsWith("居住地址:") }
+                visitCount(parent) == 1 && historyCount(parent) == 1 && nodes.any { isLabel(it.readableText, "居住地址") || canonicalLabel(it.readableText).startsWith("居住地址：") || canonicalLabel(it.readableText).startsWith("居住地址:") }
             }
             val actionRow = tree.ancestors(action).firstOrNull { visitCount(it) == 1 && historyCount(it) == 1 }
                 ?: throw VisitMismatch("走访按钮与记录按钮不能唯一关联")
@@ -179,19 +201,19 @@ class VisitContract(val target: String) {
                 segmentFirst = segment.firstOrNull()
             }
             val leaves = leafTexts(scope, scope.nodes.first().path)
-            val progress = leaves.filter { canonicalLabel(it.text).matches(Regex("[0-9]+/[0-9]+")) }
-            if (progress.size != 1 || canonicalLabel(progress.single().text) != "0/1") throw VisitMismatch("记录完成状态不是明确的 0/1")
+            val progress = leaves.filter { canonicalLabel(it.readableText).matches(Regex("[0-9]+/[0-9]+")) }
+            if (progress.size != 1 || canonicalLabel(progress.single().readableText) != "0/1") throw VisitMismatch("记录完成状态不是明确的 0/1")
             val address = staticValue(scope, scope.nodes.first().path, "居住地址")
-            val label = leaves.filter { isLabel(it.text, "身份证") || canonicalLabel(it.text).startsWith("身份证：") || canonicalLabel(it.text).startsWith("身份证:") }.minByOrNull { it.bounds.top }
+            val label = leaves.filter { isLabel(it.readableText, "身份证") || canonicalLabel(it.readableText).startsWith("身份证：") || canonicalLabel(it.readableText).startsWith("身份证:") }.minByOrNull { it.bounds.top }
                 ?: throw VisitMismatch("卡片核对结构缺失")
-            val nameCandidates = leaves.filter { it.bounds.top < label.bounds.top && it.text.trim().matches(Regex("[\\p{L}·•]{1,40}")) && canonicalLabel(it.text) !in setOf("走访", "走访记录", "姓名") }
-            val name = if (scope.nodes.any { isLabel(it.text, "姓名") }) staticValue(scope, scope.nodes.first().path, "姓名")
+            val nameCandidates = leaves.filter { it.bounds.top < label.bounds.top && it.readableText.trim().matches(Regex("[\\p{L}·•]{1,40}")) && canonicalLabel(it.readableText) !in setOf("走访", "走访记录", "姓名") }
+            val name = if (scope.nodes.any { isLabel(it.readableText, "姓名") }) staticValue(scope, scope.nodes.first().path, "姓名")
                 else if (segmentFirst != null) {
                     val firstTexts = leafTexts(scope, segmentFirst.path)
                     val first = firstTexts.singleOrNull() ?: throw VisitMismatch("平铺卡片姓名不唯一")
                     if (first !in nameCandidates) throw VisitMismatch("平铺卡片姓名位置不匹配")
-                    first.text.trim()
-                } else nameCandidates.singleOrNull()?.text?.trim() ?: throw VisitMismatch("无法唯一读取记录姓名")
+                    first.readableText.trim()
+                } else nameCandidates.singleOrNull()?.readableText?.trim() ?: throw VisitMismatch("无法唯一读取记录姓名")
             VisitRecord(name, address, cardPath, clickable(tree, action, "走访").path)
         }.sortedBy { tree.node(it.cardPath).bounds.top }
         if (result.map { it.cardPath }.distinct().size != result.size || result.map { it.fingerprint }.distinct().size != result.size) throw VisitMismatch("列表记录存在歧义，不能选择")
@@ -218,7 +240,7 @@ class VisitContract(val target: String) {
     fun normalState(tree: UiTree): ChoiceResult {
         val normal = tree.exact("正常").singleOrNull() ?: throw VisitMismatch("无法唯一识别正常选项")
         val abnormal = tree.exact("异常").singleOrNull() ?: throw VisitMismatch("户籍状态结构不匹配")
-        fun chosen(n: UiNode) = tree.ancestors(n).take(2).any { it.selected || it.checked }
+        fun chosen(n: UiNode) = tree.controlAncestors(n, setOf("正常", "异常")).any { it.selected || it.checked }
         if (chosen(normal) && chosen(abnormal)) throw VisitMismatch("状态选中标记矛盾，已暂停")
         return when {
             chosen(normal) && !chosen(abnormal) -> ChoiceResult.NORMAL
@@ -238,14 +260,15 @@ class VisitContract(val target: String) {
     }
     fun clickable(tree: UiTree, text: UiNode, expected: String): UiNode {
         if (!text.visible) throw VisitMismatch("按钮不可见")
-        return tree.ancestors(text).take(4).firstOrNull { parent ->
-            parent.clickable && parent.enabled && parent.visible && parent.bounds.nonEmpty && tree.under(parent.path).none { canonicalLabel(it.text) in setOf("走访", "走访记录", "提交") && canonicalLabel(it.text) != canonicalLabel(expected) }
+        return tree.controlAncestors(text, setOf("走访", "走访记录", "提交", "正常", "异常", "待办", "已完成")).firstOrNull { parent ->
+            parent.clickable && parent.enabled && parent.visible && parent.bounds.nonEmpty &&
+                tree.under(parent.path).none { it.editable || (!it.editable && canonicalLabel(it.readableText) in setOf("走访", "走访记录", "提交") && canonicalLabel(it.readableText) != canonicalLabel(expected)) }
         } ?: throw VisitMismatch("找不到明确可点击的按钮")
     }
     fun submit(tree: UiTree): UiNode {
         val labels = tree.exact("提交", true)
         val node = labels.singleOrNull() ?: throw VisitMismatch("提交按钮缺失或不唯一")
-        return clickable(tree, node, node.text.trim())
+        return clickable(tree, node, node.readableText.trim())
     }
     companion object {
         const val ADDRESS = "松州园小区"

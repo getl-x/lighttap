@@ -91,7 +91,7 @@ fun PrivatePanel(model: AppModel) {
                 ReadinessRow("屏幕参数可读", screen != null)
                 ReadinessRow("画面核验能力 · Android 11 及以上", supported)
                 Text(if (verified) "逐步测试已确认，可使用正式模式" else "尚未确认逐步测试，正式模式暂不可用", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("目标页面与控件会在每一步执行前重新核验。", style = MaterialTheme.typography.bodySmall)
+                Text("每一步按当前页面重新识别，兼容常规布局和控件层级变化；字段含义或流程改变、无法唯一核验时暂停。", style = MaterialTheme.typography.bodySmall)
                 if (service == null) OutlinedButton(onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("开启点击服务") }
             }
             ToolCard("运行参数") {

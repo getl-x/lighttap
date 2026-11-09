@@ -2,8 +2,6 @@ package cn.lighttap.app
 
 import android.app.Application
 import android.content.Context
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -22,9 +20,7 @@ class AppModel(context: Context) {
     internal val vibration = AndroidRunVibration(context)
     val privateModel = PrivateModel(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val dataStore = context.settings
-    private val key = stringPreferencesKey("last_config")
-    private val profilesKey = stringPreferencesKey("profiles")
+    private val storage = SettingsStorage(context.settings, BuildConfig.VERSION_CODE)
     private val saveQueue = Channel<Pair<ClickConfig, List<ClickProfile>>>(Channel.CONFLATED)
     private val mutableProfiles = MutableStateFlow<List<ClickProfile>>(emptyList())
     val profiles: StateFlow<List<ClickProfile>> = mutableProfiles
@@ -33,9 +29,11 @@ class AppModel(context: Context) {
     private val mutableConfig = MutableStateFlow(ClickConfig())
     val config: StateFlow<ClickConfig> = mutableConfig
     val loaded = MutableStateFlow(false)
+    val storageWritable = MutableStateFlow(false)
     val storageMessage = MutableStateFlow<String?>(null)
     val saving = MutableStateFlow(false)
-    private fun queueSave() { saving.value = true; saveQueue.trySend(config.value to profiles.value) }
+    private fun canEdit() = loaded.value && storageWritable.value && runtime.value.status != RunStatus.RUNNING
+    private fun queueSave() { if (storageWritable.value) { saving.value = true; saveQueue.trySend(config.value to profiles.value) } }
     val runtime = MutableStateFlow(RuntimeState(message = "请先开启点击服务"))
     val service = MutableStateFlow<ClickAccessibilityService?>(null)
     val overlayVisible = MutableStateFlow(false)
@@ -44,19 +42,19 @@ class AppModel(context: Context) {
     init {
         scope.launch {
             try {
-                val stored = dataStore.data.first()
-                stored[profilesKey]?.let { raw ->
-                    runCatching { ProfileCodec.decode(raw) }.onSuccess { mutableProfiles.value = it }
-                        .onFailure { storageMessage.value = "方案库读取失败，当前配置仍可使用" }
-                }
-                val raw = stored[key]
-                if (raw != null) mutableConfig.value = withContext(Dispatchers.Default) { ConfigCodec.decode(raw) }
+                val restored = storage.load()
+                mutableConfig.value = restored.config
+                mutableProfiles.value = restored.profiles
+                storageMessage.value = restored.message
+                // A failed upgrade transaction must never enable later writes.
+                storageWritable.value = restored.writable
+            } catch (e: CancellationException) { throw e
             } catch (_: Exception) {
-                storageMessage.value = "无法读取上次配置，当前使用空白配置；修改后将重新保存"
+                storageMessage.value = "配置读取或升级备份失败，原数据已保留并暂停编辑保存；请检查存储空间后重开应用"
             } finally { loaded.value = true }
             for ((plan, library) in saveQueue) {
                 try {
-                    dataStore.edit { it[key] = ConfigCodec.encode(plan); it[profilesKey] = ProfileCodec.encode(library) }
+                    storage.save(plan, library)
                     storageMessage.value = null
                     if (plan == config.value && library == profiles.value) saving.value = false
                 } catch (_: Exception) { saving.value = false; storageMessage.value = "配置保存失败，请检查存储空间；当前设置仍可使用" }
@@ -64,7 +62,7 @@ class AppModel(context: Context) {
         }
     }
     fun edit(change: (ClickConfig) -> ClickConfig): Boolean {
-        if (!loaded.value || runtime.value.status == RunStatus.RUNNING) return false
+        if (!canEdit()) return false
         val updated = change(config.value)
         if (updated == config.value) return true
         if (updated.structureError() != null) { storageMessage.value = updated.structureError(); return false }
@@ -77,13 +75,13 @@ class AppModel(context: Context) {
         return true
     }
     fun undo() {
-        if (!loaded.value || runtime.value.status == RunStatus.RUNNING || undoHistory.isEmpty()) return
+        if (!canEdit() || undoHistory.isEmpty()) return
         val previous = undoHistory.removeLast()
         service.value?.planEdited(previous); mutableConfig.value = previous
         canUndo.value = undoHistory.isNotEmpty(); queueSave()
     }
     fun saveProfile(name: String, replaceId: String? = null): Boolean {
-        if (!loaded.value || runtime.value.status == RunStatus.RUNNING) return false
+        if (!canEdit()) return false
         val title = name.trim()
         if (title.isEmpty() || title.length > 40) return false
         if (replaceId == null && profiles.value.size >= 30) { storageMessage.value = "最多保存 30 套方案"; return false }
@@ -92,21 +90,22 @@ class AppModel(context: Context) {
         queueSave(); return true
     }
     fun renameProfile(id: String, name: String) {
-        if (!loaded.value || runtime.value.status == RunStatus.RUNNING || name.trim().isEmpty() || name.trim().length > 40) return
+        if (!canEdit() || name.trim().isEmpty() || name.trim().length > 40) return
         mutableProfiles.value = profiles.value.map { if (it.id == id) it.copy(name = name.trim()) else it }
         queueSave()
     }
     fun deleteProfile(id: String) {
-        if (!loaded.value || runtime.value.status == RunStatus.RUNNING) return
+        if (!canEdit()) return
         mutableProfiles.value = profiles.value.filterNot { it.id == id }
         queueSave()
     }
     fun loadProfile(profile: ClickProfile): Boolean {
-        if (!loaded.value || runtime.value.status == RunStatus.RUNNING) return false
+        if (!canEdit()) return false
         service.value?.stopRun()
         return edit { profile.config }
     }
     fun importProfiles(raw: String): Int {
+        check(storageWritable.value) { "原配置已保护，暂停导入以避免覆盖" }
         check(loaded.value && runtime.value.status != RunStatus.RUNNING) { "请先停止运行" }
         val imported = ProfileCodec.decode(raw)
         require(imported.isNotEmpty()) { "文件中没有方案" }

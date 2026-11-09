@@ -95,9 +95,10 @@ private fun MainScreen(model: AppModel, openAccessibility: () -> Unit, openTest:
     val service by model.service.collectAsStateWithLifecycle()
     val screen by model.screen.collectAsStateWithLifecycle()
     val loaded by model.loaded.collectAsStateWithLifecycle()
+    val storageWritable by model.storageWritable.collectAsStateWithLifecycle()
     val storageMessage by model.storageMessage.collectAsStateWithLifecycle()
     val visible by model.overlayVisible.collectAsStateWithLifecycle()
-    val editable = loaded && runtime.status != RunStatus.RUNNING
+    val editable = loaded && storageWritable && runtime.status != RunStatus.RUNNING
     var numberEdit by remember { mutableStateOf<NumericEdit?>(null) }
     var explainService by remember { mutableStateOf(false) }
     var clearConfirm by remember { mutableStateOf(false) }

@@ -90,7 +90,7 @@ class AndroidUiBridge(private val service: AccessibilityService, override val ta
                 val child = current.getChild(index) ?: throw VisitMismatch("目标控件已失效")
                 current.recycle(); current = child
             }
-            if (current.text?.toString().orEmpty() != node.text || current.viewIdResourceName.orEmpty() != node.viewId || current.isEditable != node.editable) throw VisitMismatch("执行前控件内容已变化")
+            if (current.text?.toString().orEmpty() != node.text || current.contentDescription?.toString().orEmpty() != node.description || current.viewIdResourceName.orEmpty() != node.viewId || current.isEditable != node.editable) throw VisitMismatch("执行前控件内容已变化")
             val bounds = Rect().also { current.getBoundsInScreen(it) }
             if (!current.isVisibleToUser || !current.isEnabled || UiBox(bounds.left, bounds.top, bounds.right, bounds.bottom) != node.bounds) throw VisitMismatch("执行前控件位置或状态已变化")
             currentCoroutineContext().ensureActive()
