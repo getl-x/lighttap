@@ -7,7 +7,6 @@ import android.os.SystemClock
 import android.view.Display
 import androidx.annotation.RequiresApi
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
@@ -28,7 +27,7 @@ class AndroidChoiceVision(private val service: AccessibilityService, private val
         } finally { frame.erase() }
     }
     @RequiresApi(30)
-    private suspend fun capture(normal: UiBox, abnormal: UiBox): ChoiceFrame = withTimeout(2_000) { VisitScreenshots.capture(service) {
+    private suspend fun capture(normal: UiBox, abnormal: UiBox): ChoiceFrame = screenshotWithin(2_000) { VisitScreenshots.capture(service) {
         suspendCancellableCoroutine { continuation ->
             service.takeScreenshot(Display.DEFAULT_DISPLAY, service.mainExecutor, object : AccessibilityService.TakeScreenshotCallback {
                 override fun onSuccess(result: AccessibilityService.ScreenshotResult) {

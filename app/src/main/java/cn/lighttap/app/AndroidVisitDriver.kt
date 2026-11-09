@@ -1,6 +1,7 @@
 package cn.lighttap.app
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.accessibility.AccessibilityNodeInfo
@@ -21,8 +22,9 @@ interface VisitSubmissionFence {
 }
 // KTX edit returns Unit; these writes must return commit's durability result before any submission.
 @android.annotation.SuppressLint("UseKtx")
-private class AndroidSubmissionFence(context: Context) : VisitSubmissionFence {
-    private val store = context.getSharedPreferences("operation_fence", Context.MODE_PRIVATE)
+internal class AndroidSubmissionFence(context: Context,
+    private val store: SharedPreferences = context.getSharedPreferences("operation_fence", Context.MODE_PRIVATE),
+) : VisitSubmissionFence {
     private val resolver = context.contentResolver
     private fun bootCount() = Settings.Global.getInt(resolver, Settings.Global.BOOT_COUNT, 0)
     // Older builds did not persist timing. Start one conservative cooldown on
@@ -46,9 +48,30 @@ private class AndroidSubmissionFence(context: Context) : VisitSubmissionFence {
     override val target get() = store.getString("pending_package", null)
     override fun mark(hash: String, target: String) = store.edit().putString("pending_hash", hash).putString("pending_package", target)
         .remove("pending_click_ms").remove("pending_click_boot").remove("pending_anchor_ms").remove("pending_anchor_boot")
-        .putLong("last_submit_elapsed", SystemClock.elapsedRealtime()).putInt("last_submit_boot", bootCount()).commit()
-    override fun clear() = store.edit().remove("pending_hash").remove("pending_package")
-        .remove("pending_click_ms").remove("pending_click_boot").remove("pending_anchor_ms").remove("pending_anchor_boot").commit()
+        // Pending identity itself blocks resubmission after process death. Only
+        // a dispatched/uncertain click changes timing; a proven rejection must
+        // not invent another 61-second cooldown.
+        .commit()
+    override fun clear(): Boolean {
+        val keys = setOf("pending_hash", "pending_package", "pending_click_ms", "pending_click_boot", "pending_anchor_ms", "pending_anchor_boot")
+        val previous = store.all.filterKeys { it in keys }
+        val editor = store.edit()
+        keys.forEach { editor.remove(it) }
+        val saved = editor.commit()
+        if (!saved) {
+            // SharedPreferences changes its in-memory map even if disk commit
+            // returns false. Restore the marker there too, so the live runner
+            // cannot mistake failed persistence for a successfully cleared fence.
+            val restore = store.edit()
+            previous.forEach { (key, value) -> when (value) {
+                is String -> restore.putString(key, value)
+                is Long -> restore.putLong(key, value)
+                is Int -> restore.putInt(key, value)
+            } }
+            restore.commit()
+        }
+        return saved
+    }
 }
 
 class AndroidVisitDriver internal constructor(
@@ -74,6 +97,7 @@ class AndroidVisitDriver internal constructor(
     private var preparedSubmission: Pair<UiTree, Long>? = null
     private var preparationMs = 1_250L
     private var returnObservation: VisitReturnObservation? = null
+    private var returnContinuityLost = true
     var lastConfirmation: ReturnConfirmation? = null
         private set
     var returnChecks = 0
@@ -87,7 +111,10 @@ class AndroidVisitDriver internal constructor(
     override suspend fun begin() { invalidatePrepared(); selected = null; confirmedList = null; confirmedCount = null; confirmedTop = null; scrolls = 0; opening = false; openingAt = null; retryOpening = false; returnObservation = null }
     private suspend fun stable(initial: UiTree? = null): UiTree = observations.stable(initial)
     override val submissionPreparationLeadMs get() = (preparationMs + 250).coerceIn(500, 8_000)
-    override fun invalidatePrepared() { preparedSubmission = null; bridge.discardSubmit() }
+    override fun invalidatePrepared() {
+        preparedSubmission = null; bridge.discardSubmit()
+        returnObservation = null; returnContinuityLost = true
+    }
     override suspend fun prepareSubmission() {
         invalidatePrepared()
         if (pendingSubmission) throw VisitMismatch("已有未确认提交，禁止再次提交")
@@ -217,14 +244,27 @@ class AndroidVisitDriver internal constructor(
             preparedSubmission = null
             // Persist a non-reversible record digest before dispatch. Survives stop/process death.
             if (!fence.mark(record.fingerprint, bridge.target)) throw VisitMismatch("无法保存提交保护标记，禁止提交")
-            lastConfirmation = null; returnObservation = null; returnChecks = 0
+            lastConfirmation = null; returnObservation = null; returnChecks = 0; returnContinuityLost = false
             val attemptStart = now()
+            var provenUndispatched = false
             try { bridge.perform(tree, button, AccessibilityNodeInfo.ACTION_CLICK) }
+            catch (error: VisitPreActionMismatch) {
+                // Only this explicit bridge guarantee permits rollback. A lost
+                // callback, rejected/uncertain gesture or cancellation retains
+                // its fence and is observed without another submit.
+                if (bridge.lastClickDispatchMs?.let { it >= attemptStart } == true) throw error
+                provenUndispatched = true
+                if (fence.hash != record.fingerprint || fence.target != bridge.target || fence.pendingClickMs != null || !fence.clear())
+                    throw VisitMismatch("本次提交未派发，但保护标记清除失败；保持暂停")
+                throw error
+            }
             finally {
-                val clicked = bridge.lastClickDispatchMs?.takeIf { it >= attemptStart }
-                if (clicked != null) {
-                    if (!fence.recordClick(clicked)) throw VisitMismatch("提交点击时间保存失败；保留保护标记并暂停")
-                } else if (!fence.recordSubmission()) throw VisitMismatch("提交间隔记录保存失败；保留保护标记并暂停")
+                if (!provenUndispatched) {
+                    val clicked = bridge.lastClickDispatchMs?.takeIf { it >= attemptStart }
+                    if (clicked != null) {
+                        if (!fence.recordClick(clicked)) throw VisitMismatch("提交点击时间保存失败；保留保护标记并暂停")
+                    } else if (!fence.recordSubmission()) throw VisitMismatch("提交间隔记录保存失败；保留保护标记并暂停")
+                }
             }
             VisitEffect(message = "提交已触发一次，结果待确认；不会重复提交")
         }
@@ -325,7 +365,7 @@ class AndroidVisitDriver internal constructor(
     private suspend fun waitForSubmission(): UiTree {
         val old = pendingHash() ?: throw VisitMismatch("缺少提交保护标记")
         if (fence.target != bridge.target) throw VisitMismatch("未确认提交属于其他目标应用")
-        val observer = returnObservation ?: VisitReturnObservation(fence.pendingClickMs).also { returnObservation = it }
+        val observer = returnObservation ?: VisitReturnObservation(fence.pendingClickMs.takeUnless { returnContinuityLost }).also { returnObservation = it }
         while (true) {
             // Cooldown before both the tree and image, preserving their order
             // and the start-to-start cadence of normal-return observations.

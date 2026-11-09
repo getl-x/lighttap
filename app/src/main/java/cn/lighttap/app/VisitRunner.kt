@@ -127,6 +127,7 @@ class VisitRunner(
                 }
             } catch (cancelled: CancellationException) {
                 if (cancelled is TimeoutCancellationException && token == generation) fail(if (state.value.step == VisitStep.WAIT_LIST) "提交结果等待超时，请查看；保留保护标记，不会重复提交" else "页面转换或核验超过 30 秒，请查看")
+                else if (token == generation && scope.isActive) fail("当前步骤被取消，已暂停；请查看后继续")
                 else throw cancelled
             } catch (mismatch: VisitMismatch) {
                 if (token == generation) fail(mismatch.reason)

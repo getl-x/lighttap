@@ -33,9 +33,10 @@ class AndroidVisitDriverTest {
         override var pendingClickMs: Long? = null
         override var pendingAnchorMs: Long? = null
         var lastStamp: Long? = null
+        var refuseClear = false
         var onClear: () -> Unit = {}
-        override fun mark(hash: String, target: String): Boolean { this.hash = hash; this.target = target; lastStamp = now(); return true }
-        override fun clear(): Boolean { hash = null; target = null; pendingClickMs = null; pendingAnchorMs = null; onClear(); return true }
+        override fun mark(hash: String, target: String): Boolean { this.hash = hash; this.target = target; return true }
+        override fun clear(): Boolean { if (refuseClear) return false; hash = null; target = null; pendingClickMs = null; pendingAnchorMs = null; onClear(); return true }
         override fun recordSubmission(): Boolean { lastStamp = now(); return true }
         override fun recordClick(at: Long): Boolean { pendingClickMs = at; lastStamp = at; return true }
         override fun confirmSubmission(at: Long): Boolean { pendingAnchorMs = pendingAnchorMs ?: at; lastStamp = pendingAnchorMs; return true }
@@ -59,6 +60,7 @@ class AndroidVisitDriverTest {
         var blockedNavigationClicks = 0
         var captures = 0
         var preparationFailure = false
+        var rejectSubmitBeforeDispatch = false
         var prepared = 0
         override suspend fun prepareSubmit(tree: UiTree, node: UiNode) {
             prepared++
@@ -80,6 +82,7 @@ class AndroidVisitDriverTest {
         }
         override suspend fun perform(tree: UiTree, node: UiNode, action: Int, value: String?) {
             currentCoroutineContext().ensureActive()
+            if (node.text == "提交" && rejectSubmitBeforeDispatch) throw VisitPreActionMismatch("执行前页面发生变化，已暂停")
             actions += if (action == AccessibilityNodeInfo.ACTION_SET_TEXT) node.path else node.text
             when {
                 value != null -> form = form.copy(nodes = form.nodes.map { if (it.path == node.path) it.copy(text = value) else it })
@@ -95,6 +98,58 @@ class AndroidVisitDriverTest {
         driver.begin()
         for (step in listOf(VisitStep.FIND_LIST, VisitStep.OPEN_FORM, VisitStep.WAIT_FORM,
             VisitStep.FILL_ADDRESS, VisitStep.LOCATE_DESCRIPTION, VisitStep.FILL_DESCRIPTION, VisitStep.VERIFY_FORM)) driver.execute(step)
+    }
+    @Test fun provenUndispatchedSubmissionReturnsToSubmitAndCanBeExplicitlyRetried() = runTest {
+        val ui = Ui { testScheduler.currentTime }.apply { rejectSubmitBeforeDispatch = true }
+        val fence = Fence()
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, fence, returnVision(), { testScheduler.currentTime })
+        val runner = runner(driver)
+        runner.start(plan, VisitExecution.FORMAL); advanceTimeBy(2_000); runCurrent()
+        assertEquals(VisitStatus.ERROR, runner.state.value.status)
+        assertEquals(VisitStep.SUBMIT, runner.state.value.step)
+        assertFalse(driver.pendingSubmission)
+        assertEquals(0, ui.actions.count { it == "提交" })
+        ui.rejectSubmitBeforeDispatch = false
+        runner.resume(); advanceTimeBy(2_000); runCurrent()
+        assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
+        assertEquals(1, ui.actions.count { it == "提交" })
+    }
+
+    @Test fun failedClearAfterProvenRejectionStillKeepsTheFenceAndCannotRetrySubmit() = runTest {
+        val ui = Ui { testScheduler.currentTime }.apply { rejectSubmitBeforeDispatch = true }
+        val fence = Fence().apply { refuseClear = true }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, fence, returnVision(), { testScheduler.currentTime })
+        val runner = runner(driver)
+        runner.start(plan, VisitExecution.FORMAL); advanceTimeBy(2_000); runCurrent()
+        assertEquals(VisitStatus.ERROR, runner.state.value.status)
+        assertEquals(VisitStep.WAIT_LIST, runner.state.value.step)
+        assertTrue(driver.pendingSubmission)
+        assertTrue(runner.state.value.message.contains("清除失败"))
+        ui.rejectSubmitBeforeDispatch = false
+        runner.resume(); advanceTimeBy(121_000); runCurrent()
+        assertEquals(0, ui.actions.count { it == "提交" })
+        assertTrue(driver.pendingSubmission)
+    }
+
+    @Test fun shortPauseDiscardsReturnEvidenceEvenWhenASuccessHintAppearsAfterResume() = runTest {
+        val ui = Ui { testScheduler.currentTime }
+        val fence = Fence { testScheduler.currentTime }
+        var hint = false
+        val frames = mutableListOf<Long>()
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, fence,
+            VisitReturnVision { frames += testScheduler.currentTime; ReturnFrame(ReturnVisual.CLEAR, testScheduler.currentTime) },
+            { testScheduler.currentTime }, { _, _ -> hint })
+        val runner = runner(driver)
+        runner.start(plan, VisitExecution.FORMAL)
+        repeat(100) { if (frames.isEmpty()) { advanceTimeBy(10); runCurrent() } }
+        assertEquals(1, frames.size)
+        assertTrue(driver.pendingSubmission)
+        runner.pause(); advanceTimeBy(100); hint = true
+        runner.resume(); advanceTimeBy(2_000); runCurrent()
+        assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
+        assertEquals(frames[1], driver.lastConfirmation!!.anchorMs)
+        assertTrue(driver.lastConfirmation!!.anchorMs > frames[0])
+        assertEquals(1, ui.actions.count { it == "提交" })
     }
     @Test fun preparedSubmissionUsesOneFreshReadAtTheDeadline() = runTest {
         val ui = Ui { testScheduler.currentTime }

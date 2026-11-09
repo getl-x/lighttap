@@ -149,6 +149,57 @@ class VisitRunnerTest {
         e.start(plan, VisitExecution.FORMAL); runCurrent(); advanceTimeBy(30_100); runCurrent()
         assertEquals(VisitStatus.ERROR, e.state.value.status); advanceTimeBy(60_000); runCurrent(); assertEquals(1, d.actions.size)
     }
+    @Test fun innerCancellationCannotLeaveAStoppedWorkerDisplayedAsRunning() = runTest {
+        var cancelledOnce = false
+        var submissions = 0
+        val d = object : VisitDriver {
+            override var pendingSubmission = false
+            override suspend fun begin() = Unit
+            override suspend fun validate(step: VisitStep) = Unit
+            override suspend fun execute(step: VisitStep): VisitEffect {
+                if (step == VisitStep.SUBMIT) { submissions++; pendingSubmission = true }
+                if (step == VisitStep.FILL_ADDRESS && !cancelledOnce) {
+                    cancelledOnce = true; throw CancellationException("Generated inner cancellation")
+                }
+                if (step == VisitStep.WAIT_LIST) pendingSubmission = false
+                return VisitEffect()
+            }
+            override fun release() = Unit
+        }
+        val e = VisitRunner(backgroundScope, d, { testScheduler.currentTime })
+        e.start(plan, VisitExecution.FORMAL); runCurrent()
+        assertEquals(VisitStatus.ERROR, e.state.value.status)
+        assertFalse(e.state.value.busy)
+        assertEquals(0, submissions)
+        e.resume(); runCurrent()
+        assertEquals(VisitStatus.COMPLETED, e.state.value.status)
+        assertEquals(1, submissions)
+    }
+    @Test fun cancellationAfterSubmissionPreservesTheFenceAndResumeOnlyChecksResult() = runTest {
+        var submissions = 0
+        val d = object : VisitDriver {
+            override var pendingSubmission = false
+            override suspend fun begin() = Unit
+            override suspend fun validate(step: VisitStep) = Unit
+            override suspend fun execute(step: VisitStep): VisitEffect {
+                if (step == VisitStep.SUBMIT) {
+                    submissions++; pendingSubmission = true
+                    throw CancellationException("Generated uncertain callback cancellation")
+                }
+                if (step == VisitStep.WAIT_LIST) pendingSubmission = false
+                return VisitEffect()
+            }
+            override fun release() = Unit
+        }
+        val e = VisitRunner(backgroundScope, d, { testScheduler.currentTime })
+        e.start(plan, VisitExecution.FORMAL); runCurrent()
+        assertEquals(VisitStatus.ERROR, e.state.value.status)
+        assertEquals(VisitStep.WAIT_LIST, e.state.value.step)
+        assertTrue(d.pendingSubmission)
+        e.resume(); runCurrent()
+        assertEquals(VisitStatus.COMPLETED, e.state.value.status)
+        assertEquals(1, submissions)
+    }
     @Test fun stopResetsCountAndCountdown() = runTest {
         val d = Driver(); val e = runner(d)
         e.start(plan.copy(mode = VisitRunMode.CONTINUOUS), VisitExecution.FORMAL); runCurrent(); e.stop()

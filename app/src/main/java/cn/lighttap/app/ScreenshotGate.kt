@@ -5,6 +5,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
+
+internal suspend fun <T : Any> screenshotWithin(timeoutMs: Long, operation: suspend () -> T): T =
+    withTimeoutOrNull(timeoutMs) { operation() }
+        ?: throw VisitMismatch("本机截图等待超时，请查看后继续")
 
 /** All screen readers on one accessibility service share the same cooldown.
  * Only timing is retained; every request still acquires a fresh screenshot. */

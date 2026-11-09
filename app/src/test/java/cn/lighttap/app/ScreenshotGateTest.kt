@@ -7,6 +7,23 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ScreenshotGateTest {
+    @Test fun localScreenshotTimeoutHasItsOwnReasonAndReleasesTheGate() = runTest {
+        val gate = ScreenshotGate({ testScheduler.currentTime })
+        try { screenshotWithin(200) { gate.capture { delay(1_000); true } }; fail("Must time out") }
+        catch (error: VisitMismatch) { assertEquals("本机截图等待超时，请查看后继续", error.reason) }
+        assertTrue(screenshotWithin(1_000) { gate.capture { true } })
+        assertEquals(700L, testScheduler.currentTime)
+    }
+
+    @Test fun outerCancellationIsNeverReportedAsALocalScreenshotTimeout() = runTest {
+        var reported = false
+        val job = launch {
+            try { screenshotWithin(2_000) { delay(5_000); true } }
+            catch (_: VisitMismatch) { reported = true }
+        }
+        advanceTimeBy(100); job.cancelAndJoin()
+        assertFalse(reported)
+    }
     @Test fun preparingAnObservationWaitsButDoesNotTakeOrReserveAnImage() = runTest {
         val gate = ScreenshotGate({ testScheduler.currentTime })
         var images = 0

@@ -38,7 +38,11 @@ class DeviceImageFlowTest {
         return context.appModel.service.value!!
     }
 
-    @Test fun imageNavigationInputAndSingleSubmitCompleteOnGeneratedOwnPage() {
+    @Test fun imageNavigationInputAndSingleSubmitCompleteOnGeneratedOwnPage() = generatedFlow(false)
+
+    @Test fun movedButtonAfterFenceIsRejectedWithoutClickAndExplicitResumeCompletesOnce() = generatedFlow(true)
+
+    private fun generatedFlow(moveBeforeSubmit: Boolean) {
         val service = service()
         inst.getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
             .executeShellCommand("am start -n cn.lighttap.app/.MainActivity").use {
@@ -52,13 +56,25 @@ class DeviceImageFlowTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         val native = AndroidUiBridge(service, context.packageName) { null }
         val images = AndroidImageVisitUiAccess(service, native, VisitSurfaceGuard(), VisitDiagnostics { events += it })
+        var submitButton: Button? = null
+        var moved = false
+        val bridge = object : VisitUiAccess by images {
+            override suspend fun perform(tree: UiTree, node: UiNode, action: Int, value: String?) {
+                if (moveBeforeSubmit && !moved && action == android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK && canonicalLabel(node.text) == "提交") {
+                    withContext(Dispatchers.Main.immediate) { submitButton!!.translationY += 16 * context.resources.displayMetrics.density }
+                    moved = true
+                    delay(180)
+                }
+                images.perform(tree, node, action, value)
+            }
+        }
         val fence = object : VisitSubmissionFence {
             override var hash: String? = null
             override var target: String? = null
             override fun mark(hash: String, target: String): Boolean { this.hash = hash; this.target = target; return true }
             override fun clear(): Boolean { hash = null; target = null; return true }
         }
-        val driver = AndroidVisitDriver(images, AndroidChoiceVision(service), fence,
+        val driver = AndroidVisitDriver(bridge, AndroidChoiceVision(service), fence,
             AndroidReturnVision(service), { SystemClock.elapsedRealtime() })
         val runner = VisitRunner(scope, driver, { SystemClock.elapsedRealtime() })
         var navigationClicks = 0; var submissions = 0
@@ -108,7 +124,7 @@ class DeviceImageFlowTest {
                 button("正常") {}.isSelected = true
                 button("异常", Color.rgb(221, 221, 221)) {}.setTextColor(Color.rgb(29, 31, 36))
             })
-            layout.button("提交") {
+            submitButton = layout.button("提交") {
                 assertEquals(VisitContract.ADDRESS, address!!.text.toString())
                 assertEquals(VisitContract.DESCRIPTION, description!!.text.toString())
                 submissions++; emptyList()
@@ -132,6 +148,16 @@ class DeviceImageFlowTest {
             inst.waitForIdleSync(); SystemClock.sleep(500)
             main { runner.start(VisitSettings(targetPackage = context.packageName, recognition = VisitRecognition.IMAGE), VisitExecution.FORMAL) }
             waitFor("Generated image task finishes", 60_000) { runner.state.value.status in setOf(VisitStatus.COMPLETED, VisitStatus.ERROR) }
+            if (moveBeforeSubmit) {
+                assertTrue("Injection reached: ${runner.state.value.step}: ${runner.state.value.message}; nav=$navigationClicks submit=$submissions", moved)
+                assertEquals(VisitStatus.ERROR, runner.state.value.status)
+                assertEquals(VisitStep.SUBMIT, runner.state.value.step)
+                assertEquals(0, submissions)
+                assertFalse(driver.pendingSubmission)
+                inst.sendStatus(2, Bundle().apply { putBoolean("moved_submit_rejected_without_fence_or_click", true) })
+                main { runner.resume() }
+                waitFor("Explicit resume finishes the moved-button fixture", 60_000) { runner.state.value.status in setOf(VisitStatus.COMPLETED, VisitStatus.ERROR) }
+            }
             inst.sendStatus(2, Bundle().apply {
                 putString("image_final_step", runner.state.value.step.name)
                 putInt("image_navigation_clicks", navigationClicks); putInt("image_submit_clicks", submissions)

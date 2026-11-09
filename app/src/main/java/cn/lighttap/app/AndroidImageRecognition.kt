@@ -109,7 +109,7 @@ internal class AndroidImageRecognition(private val service: AccessibilityService
         } finally { sample.fill(0) }
     }
 
-    private suspend fun screenshot(): Pair<Bitmap, Long> = withTimeout(2_500) { VisitScreenshots.capture(service) {
+    private suspend fun screenshot(): Pair<Bitmap, Long> = screenshotWithin(2_500) { VisitScreenshots.capture(service) {
         if (Build.VERSION.SDK_INT < 30) throw VisitMismatch("图像备用方式需要 Android 11 及以上")
         suspendCancellableCoroutine { continuation ->
             service.takeScreenshot(Display.DEFAULT_DISPLAY, Dispatchers.Default.asExecutor(), object : AccessibilityService.TakeScreenshotCallback {
@@ -183,16 +183,21 @@ internal class AndroidImageVisitUiAccess(
     override suspend fun prepareSubmit(tree: UiTree, node: UiNode) {
         prepared = null
         val screen = tree.nodes.firstOrNull()?.bounds ?: throw VisitPreActionMismatch("无法读取当前界面")
-        prepared = surface.clear(listOf(screen)) { flow.prepare(tree, node, false) }
+        val plan = surface.clear(listOf(screen)) { flow.prepare(tree, node, false) }
+        currentCoroutineContext().ensureActive()
+        prepared = plan
     }
     override suspend fun perform(tree: UiTree, node: UiNode, action: Int, value: String?) {
         if (action == AccessibilityNodeInfo.ACTION_CLICK) {
             val plan = prepared
             prepared = null
             lastClickDispatchMs = null
-            if (plan == null || clickGuard.reacquire(plan.request, plan.requestedNode, tree, false) != node)
-                throw VisitPreActionMismatch("图像提交准备已失效，请重新核验")
-            val screen = tree.nodes.first().bounds
+            val screen = try {
+                if (plan == null || clickGuard.reacquire(plan.request, plan.requestedNode, tree, false) != node)
+                    throw VisitMismatch("图像提交准备已失效，请重新核验")
+                tree.nodes.first().bounds
+            } catch (error: VisitMismatch) { throw VisitPreActionMismatch(error.reason) }
+            checkNotNull(plan)
             surface.clear(listOf(screen)) { flow.dispatch(plan) }
         }
         else surface.clear(listOf(node.bounds)) { native.perform(tree, node, action, value) }
