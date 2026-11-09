@@ -15,7 +15,7 @@ import kotlin.coroutines.resume
 
 fun interface VisitChoiceVerifier { suspend fun requireNormal(normal: UiNode, abnormal: UiNode) }
 
-class AndroidChoiceVision(private val service: AccessibilityService) : VisitChoiceVerifier {
+class AndroidChoiceVision(private val service: AccessibilityService, private val surface: VisitSurfaceGuard = VisitSurfaceGuard()) : VisitChoiceVerifier {
     private var lastCapture = 0L
     override suspend fun requireNormal(normal: UiNode, abnormal: UiNode) {
         if (Build.VERSION.SDK_INT < 30) throw VisitMismatch("此设备不支持本机视觉核验，已暂停")
@@ -23,7 +23,7 @@ class AndroidChoiceVision(private val service: AccessibilityService) : VisitChoi
         val remaining = 450 - (SystemClock.elapsedRealtime() - lastCapture)
         if (remaining > 0) delay(remaining)
         lastCapture = SystemClock.elapsedRealtime()
-        val frame = capture(normal.bounds, abnormal.bounds)
+        val frame = surface.clear(listOf(normal.bounds, abnormal.bounds)) { capture(normal.bounds, abnormal.bounds) }
         try {
             when (withContext(Dispatchers.Default) { OpenCvChoiceBackend.classify(frame, normal.bounds, abnormal.bounds) }) {
                 ChoiceResult.NORMAL -> Unit

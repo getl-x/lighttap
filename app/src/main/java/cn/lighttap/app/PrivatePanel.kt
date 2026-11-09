@@ -122,6 +122,7 @@ fun PrivatePanel(model: AppModel) {
                 }) { Text("管理提醒通知") }
             }
             ToolCard("检查与运行记录") {
+                Text("执行步骤时详情自动收起；点击、输入和画面核验前会临时避让悬浮内容，暂停后恢复详情。", style = MaterialTheme.typography.bodySmall)
                 Text("只读检查：$probe", style = MaterialTheme.typography.bodySmall)
                 Text("已执行：${state.lastStep}\n本步结果：${state.result.ifBlank { "尚无" }}", style = MaterialTheme.typography.bodySmall)
                 TextButton(onClick = { showHistory = !showHistory }) { Text(if (showHistory) "收起近期记录" else "近期记录 · ${history.size}") }

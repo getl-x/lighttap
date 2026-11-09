@@ -25,18 +25,27 @@ object ChoiceVision {
         if (!frame.contains(normal) || !frame.contains(abnormal)) return ChoiceResult.UNKNOWN
         val w = normal.right - normal.left; val h = normal.bottom - normal.top
         val aw = abnormal.right - abnormal.left; val ah = abnormal.bottom - abnormal.top
-        if (w < 30 || h < 18 || aw < 30 || ah < 18 || kotlin.math.abs(w-aw) > w/5 || kotlin.math.abs(h-ah) > h/8 || kotlin.math.abs(normal.top-abnormal.top) > h/8 || normal.left >= abnormal.left || normal.right > abnormal.left + w/10) return ChoiceResult.UNKNOWN
-        fun edgeScore(box: UiBox, leftEdge: Boolean, color: (Int) -> Boolean): Double {
+        if (w < 30 || h < 18 || aw < 30 || ah < 18) return ChoiceResult.UNKNOWN
+        // Label-bound controls can grow to different sizes or wrap vertically
+        // under font/display scaling. Require a clear row or column, not equal
+        // pixel dimensions. The shared border is excluded from each score.
+        val row = normal.left < abnormal.left && normal.right <= abnormal.left + minOf(w, aw)/10 &&
+            minOf(normal.bottom, abnormal.bottom) - maxOf(normal.top, abnormal.top) >= minOf(h, ah)/2
+        val column = normal.top < abnormal.top && normal.bottom <= abnormal.top + minOf(h, ah)/10 &&
+            minOf(normal.right, abnormal.right) - maxOf(normal.left, abnormal.left) >= minOf(w, aw)/2
+        if (!row && !column) return ChoiceResult.UNKNOWN
+        fun edgeScore(box: UiBox, first: Boolean, color: (Int) -> Boolean): Double {
             val width = box.right-box.left; val height = box.bottom-box.top
             val band = (height / 10).coerceIn(2, 5)
             var total = 0; var matched = 0
             fun found(points: List<Pair<Int, Int>>) { total++; if (points.any { (x,y) -> x >= frame.left && x < frame.left+frame.width && y >= frame.top && y < frame.top+frame.height && color(frame.maskedPixel(x,y)) }) matched++ }
             for (x in box.left+width/5 until box.right-width/5) {
-                found((-1..band).map { d -> x to box.top+d })
-                found((-band..1).map { d -> x to box.bottom-1+d })
+                if (row || first) found((-1..band).map { d -> x to box.top+d })
+                if (row || !first) found((-band..1).map { d -> x to box.bottom-1+d })
             }
             for (y in box.top+height/5 until box.bottom-height/5) {
-                found(if (leftEdge) (-1..band).map { d -> box.left+d to y } else (-band..1).map { d -> box.right-1+d to y })
+                if (column || first) found((-1..band).map { d -> box.left+d to y })
+                if (column || !first) found((-band..1).map { d -> box.right-1+d to y })
             }
             return if (total == 0) 0.0 else matched.toDouble()/total
         }

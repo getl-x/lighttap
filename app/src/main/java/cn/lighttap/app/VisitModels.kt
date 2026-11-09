@@ -44,6 +44,8 @@ open class VisitMismatch(val reason: String) : Exception(reason)
 /** A read was interrupted by WebView/window publication; no action has been sent. */
 class VisitReadPending(reason: String) : VisitMismatch(reason)
 class VisitNavigationRejected : VisitMismatch("系统未接受走访控件点击，请查看后继续")
+/** Validation rejected the operation before any input was dispatched. */
+class VisitPreActionMismatch(reason: String) : VisitMismatch(reason)
 /** Only an inconclusive pixel classification can be re-observed; explicit abnormal states cannot. */
 class VisitChoiceUncertain : VisitMismatch("选中样式不匹配或被遮挡，视觉核验不确定，已暂停")
 data class VisitEffect(val repeat: Boolean = false, val message: String = "已核验", val emptyList: Boolean = false)

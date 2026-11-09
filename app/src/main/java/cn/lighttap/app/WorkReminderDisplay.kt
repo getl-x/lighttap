@@ -25,6 +25,16 @@ internal class WorkReminderDisplay(private val service: ClickAccessibilityServic
     private val wm = service.getSystemService(WindowManager::class.java)
     private val store = service.getSharedPreferences(STORE, Context.MODE_PRIVATE)
     private var card: LinearLayout? = null
+    private var suppressed = false
+    fun suppress(active: Boolean) {
+        suppressed = active
+        val window = card ?: return
+        val params = window.layoutParams as? WindowManager.LayoutParams ?: return
+        params.flags = if (active) params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            else params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        window.visibility = if (active) View.INVISIBLE else View.VISIBLE
+        wm.updateViewLayout(window, params)
+    }
     private fun dp(value: Int) = (value * service.resources.displayMetrics.density).roundToInt()
 
     init {
@@ -85,14 +95,17 @@ internal class WorkReminderDisplay(private val service: ClickAccessibilityServic
         }
         val params = WindowManager.LayoutParams(minOf(dp(340), service.resources.displayMetrics.widthPixels - dp(20)), -2,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                (if (suppressed) WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE else 0),
             PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; y = dp(28) }
         card = layout
+        layout.visibility = if (suppressed) View.INVISIBLE else View.VISIBLE
         wm.addView(layout, params)
     }
 
     fun bounds(): UiBox? {
         val view = card ?: return null
+        if (suppressed || view.visibility != View.VISIBLE) return null
         val point = IntArray(2); view.getLocationOnScreen(point)
         return UiBox(point[0], point[1], point[0] + view.width, point[1] + view.height)
     }

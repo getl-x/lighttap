@@ -56,8 +56,10 @@ class AndroidVisitDriverTest {
         var ignoredNavigationClicks = 0
         var navigationClicks = 0
         var rejectedNavigationClicks = 0
+        var blockedNavigationClicks = 0
         override suspend fun openVisit(tree: UiTree, node: UiNode) {
             navigationClicks++
+            if (blockedNavigationClicks > 0) { blockedNavigationClicks--; throw VisitPreActionMismatch("悬浮内容遮挡目标控件，请移开或收起后继续") }
             if (rejectedNavigationClicks > 0) { rejectedNavigationClicks--; throw VisitNavigationRejected() }
             if (ignoredNavigationClicks > 0) { ignoredNavigationClicks--; actions += "走访"; return }
             perform(tree, node, AccessibilityNodeInfo.ACTION_CLICK)
@@ -129,6 +131,20 @@ class AndroidVisitDriverTest {
         assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
         assertEquals(1, ui.actions.count { it == "走访" })
         assertEquals(1, ui.actions.count { it == "提交" })
+    }
+
+    @Test fun blockedBeforeDispatchKeepsOpenStepAndDoesNotWaitForUnopenedForm() = runTest {
+        val ui = Ui { testScheduler.currentTime }.apply { blockedNavigationClicks = 1 }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, Fence(), returnVision(), { testScheduler.currentTime })
+        val runner = runner(driver)
+        runner.start(plan, VisitExecution.FORMAL)
+        advanceTimeBy(2_000); runCurrent()
+        assertEquals(VisitStatus.ERROR, runner.state.value.status)
+        assertEquals(VisitStep.OPEN_FORM, runner.state.value.step)
+        assertFalse(ui.opened); assertTrue(ui.actions.isEmpty()); assertEquals(0L, runner.state.value.rounds)
+        runner.resume(); advanceTimeBy(3_000); runCurrent()
+        assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
+        assertEquals(1, ui.actions.count { it == "走访" }); assertEquals(1, ui.actions.count { it == "提交" })
     }
 
     @Test fun manuallyOpenedDifferentRecordIsRejectedWithoutAnotherClickOrSubmit() = runTest {

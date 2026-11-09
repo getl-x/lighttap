@@ -12,10 +12,11 @@ import kotlin.coroutines.resume
 
 /** No OCR/model/network: inspect a small sample of the known list's white body.
  * Screenshots and pixels stay in memory and are discarded after each check. */
-class AndroidReturnVision(private val service: AccessibilityService) : VisitReturnVision {
+class AndroidReturnVision(private val service: AccessibilityService, private val surface: VisitSurfaceGuard = VisitSurfaceGuard()) : VisitReturnVision {
     override suspend fun inspect(tree: UiTree): ReturnFrame {
         if (Build.VERSION.SDK_INT < 30) throw VisitMismatch("此设备不支持提交后画面核验，已暂停")
-        return capture(tree)
+        val body = tree.nodes.firstOrNull()?.bounds ?: throw VisitReadPending("当前界面不可读取")
+        return surface.clear(listOf(body)) { capture(tree) }
     }
     @RequiresApi(30)
     private suspend fun capture(tree: UiTree): ReturnFrame = withTimeoutOrNull(2_000) {

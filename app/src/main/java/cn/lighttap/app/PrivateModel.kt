@@ -78,6 +78,8 @@ class PrivateModel(private val context: Context) {
         val environment = JSONObject().put("appVersion", BuildConfig.VERSION_NAME).put("appVersionCode", BuildConfig.VERSION_CODE)
             .put("androidApi", Build.VERSION.SDK_INT).put("androidVersion", Build.VERSION.RELEASE)
             .put("manufacturer", Build.MANUFACTURER).put("model", Build.MODEL)
+            .put("fontScale", context.resources.configuration.fontScale.toDouble())
+            .put("displayDensityDpi", context.resources.displayMetrics.densityDpi)
             .put("targetVersion", targetInfo?.versionName ?: JSONObject.NULL)
             .put("serviceConnected", controller != null).put("status", current.status.name).put("step", current.step.name)
             .put("execution", current.execution.name).put("rounds", current.rounds).put("pendingSubmission", current.pendingSubmission)
@@ -136,14 +138,26 @@ class PrivateController(private val service: ClickAccessibilityService, private 
     private val overlay = PrivateOverlay(service, this)
     private val workReminder = WorkReminderDisplay(service)
     private val vibration = service.appModel.vibration
-    private val bridge = DiagnosedVisitUiAccess(AndroidUiBridge(service, PrivateModel.TARGET) { overlay.bounds() },
+    private val surface = VisitSurfaceGuard(conceal = { areas ->
+        withContext(Dispatchers.Main.immediate) {
+            val covered = areas.any { area -> overlay.bounds()?.intersects(area) == true || workReminder.bounds()?.intersects(area) == true }
+            if (covered) {
+                overlay.suppress(true); workReminder.suppress(true)
+                model.debugLog.record(VisitDebugEvent(VisitDebugKind.OVERLAY_AVOID, ok = true))
+            }
+            covered
+        }
+    }, restore = { withContext(Dispatchers.Main.immediate) { overlay.suppress(false); workReminder.suppress(false) } })
+    private val bridge = DiagnosedVisitUiAccess(SurfaceVisitUiAccess(AndroidUiBridge(service, PrivateModel.TARGET) { overlay.bounds() }, surface),
         model.debugLog, { SystemClock.elapsedRealtime() })
-    private val driver = AndroidVisitDriver(service, bridge, AndroidChoiceVision(service), model.debugLog)
-    private val runner = VisitRunner(scope, driver, { SystemClock.elapsedRealtime() }, { notifyPause() }, { model.confirmTest() },
+    private val driver: AndroidVisitDriver = AndroidVisitDriver(service, bridge, AndroidChoiceVision(service, surface), model.debugLog,
+        surface, { if (shown) overlay.prepare(runner.state.value, mode) })
+    private val runner: VisitRunner = VisitRunner(scope, driver, { SystemClock.elapsedRealtime() }, { notifyPause() }, { model.confirmTest() },
         onCompleted = { vibration.complete(service.appModel.completionVibration.mode.value) }, diagnostics = model.debugLog)
     private var mode = VisitExecution.STEP_TEST
     private var shown = false
     private val probeCheck = ReadOnlyProbe(scope, { message ->
+        overlay.setProbing(message == "正在只读检查，未执行操作")
         model.probeResult.value = message
         model.debugLog.record(VisitDebugEvent(VisitDebugKind.PROBE, reason = message))
         if (shown) overlay.render(runner.state.value.copy(message = message), mode)

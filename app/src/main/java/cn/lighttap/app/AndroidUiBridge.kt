@@ -71,6 +71,8 @@ class AndroidUiBridge(private val service: AccessibilityService, override val ta
     override suspend fun openVisit(tree: UiTree, node: UiNode) = performFresh(tree, node, AccessibilityNodeInfo.ACTION_CLICK, null, true)
     @Suppress("DEPRECATION")
     private suspend fun performFresh(tree: UiTree, node: UiNode, action: Int, value: String?, navigation: Boolean) = withContext(reader) {
+        var dispatched = false
+        try {
         guard()
         val fresh = captureFresh()
         if (fresh != tree) throw VisitMismatch("执行前页面发生变化，已暂停")
@@ -94,6 +96,7 @@ class AndroidUiBridge(private val service: AccessibilityService, override val ta
             currentCoroutineContext().ensureActive()
             val args = value?.let { Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, it) } }
             if (action == AccessibilityNodeInfo.ACTION_CLICK) {
+                dispatched = true
                 dispatchVisitClick(navigation, { current.performAction(AccessibilityNodeInfo.ACTION_CLICK) }) {
                     // Touch the fresh, exactly matched node bounds; never use preset coordinates
                     // and never retry an accepted action with another action type.
@@ -114,8 +117,15 @@ class AndroidUiBridge(private val service: AccessibilityService, override val ta
                     } ?: false
                     if (!completed) throw VisitMismatch("本次点击未确认完成，已暂停且不会自动重试")
                 }
-            } else if (!current.performAction(action, args)) throw VisitMismatch("系统未确认本次控件操作，已暂停")
+            } else {
+                dispatched = true
+                if (!current.performAction(action, args)) throw VisitMismatch("系统未确认本次控件操作，已暂停")
+            }
         } finally { current.recycle() }
+        } catch (e: VisitMismatch) {
+            if (!dispatched) throw VisitPreActionMismatch(e.reason)
+            throw e
+        }
     }
 }
 
