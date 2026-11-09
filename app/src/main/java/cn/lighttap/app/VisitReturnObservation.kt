@@ -2,7 +2,10 @@ package cn.lighttap.app
 
 enum class ReturnVisual { CLEAR, BLOCKED, UNKNOWN }
 data class ReturnFrame(val state: ReturnVisual, val capturedAt: Long)
-fun interface VisitReturnVision { suspend fun inspect(tree: UiTree): ReturnFrame }
+fun interface VisitReturnVision {
+    suspend fun inspect(tree: UiTree): ReturnFrame
+    suspend fun prepare() = Unit
+}
 data class ReturnConfirmation(val anchorMs: Long, val method: String)
 
 /** One submission owns one observer. A hint can speed confirmation, but never

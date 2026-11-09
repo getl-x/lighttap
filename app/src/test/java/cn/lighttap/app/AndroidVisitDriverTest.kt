@@ -57,6 +57,7 @@ class AndroidVisitDriverTest {
         var navigationClicks = 0
         var rejectedNavigationClicks = 0
         var blockedNavigationClicks = 0
+        var captures = 0
         var preparationFailure = false
         var prepared = 0
         override suspend fun prepareSubmit(tree: UiTree, node: UiNode) {
@@ -71,6 +72,7 @@ class AndroidVisitDriverTest {
             perform(tree, node, AccessibilityNodeInfo.ACTION_CLICK)
         }
         override suspend fun capture(): UiTree {
+            captures++
             listOverride?.let { return it }
             if (submitted) return if (now() < readyAt) listTree() else listTree().copy(nodes = listTree().nodes.take(3) + UiNode("r/empty", text = "暂无待办"))
             if (opened) return if (now() < readyAt) form.copy(nodes = form.nodes.take(3)) else form
@@ -89,6 +91,61 @@ class AndroidVisitDriverTest {
     private fun TestScope.runner(driver: VisitDriver) = VisitRunner(backgroundScope, driver, { testScheduler.currentTime })
     private fun TestScope.returnVision() = VisitReturnVision { ReturnFrame(ReturnVisual.CLEAR, testScheduler.currentTime) }
     private val plan = VisitSettings(targetPackage = "fixture")
+    private suspend fun readyForm(driver: AndroidVisitDriver) {
+        driver.begin()
+        for (step in listOf(VisitStep.FIND_LIST, VisitStep.OPEN_FORM, VisitStep.WAIT_FORM,
+            VisitStep.FILL_ADDRESS, VisitStep.LOCATE_DESCRIPTION, VisitStep.FILL_DESCRIPTION, VisitStep.VERIFY_FORM)) driver.execute(step)
+    }
+    @Test fun preparedSubmissionUsesOneFreshReadAtTheDeadline() = runTest {
+        val ui = Ui { testScheduler.currentTime }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, Fence(), returnVision(), { testScheduler.currentTime })
+        readyForm(driver); driver.prepareSubmission()
+        val captured = ui.captures
+        advanceTimeBy(1000)
+        driver.execute(VisitStep.SUBMIT)
+        assertEquals(1, ui.captures - captured)
+        assertEquals(1, ui.actions.count { it == "提交" })
+    }
+    @Test fun changedFieldAfterEarlyPreparationCannotSubmit() = runTest {
+        val ui = Ui { testScheduler.currentTime }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, Fence(), returnVision(), { testScheduler.currentTime })
+        readyForm(driver); driver.prepareSubmission()
+        ui.form = ui.form.copy(nodes = ui.form.nodes.map { if (it.path == "r/5/1") it.copy(text = "changed") else it })
+        try { driver.execute(VisitStep.SUBMIT); fail("Changed value submitted") } catch (_: VisitMismatch) { }
+        assertFalse(driver.pendingSubmission)
+        assertFalse(ui.actions.contains("提交"))
+    }
+    @Test fun oldPreparationIsRecheckedBeforeSubmission() = runTest {
+        val ui = Ui { testScheduler.currentTime }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, Fence(), returnVision(), { testScheduler.currentTime })
+        readyForm(driver); driver.prepareSubmission()
+        val count = ui.prepared
+        advanceTimeBy(3001)
+        driver.execute(VisitStep.SUBMIT)
+        assertEquals(count + 1, ui.prepared)
+        assertEquals(1, ui.actions.count { it == "提交" })
+    }
+
+    @Test fun invalidatedPreparationRequiresAFullRecheckAndExplicitAbnormalStillBlocks() = runTest {
+        val ui = Ui { testScheduler.currentTime }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, Fence(), returnVision(), { testScheduler.currentTime })
+        readyForm(driver); driver.prepareSubmission()
+        val preparations = ui.prepared
+        driver.invalidatePrepared()
+        driver.execute(VisitStep.SUBMIT)
+        assertEquals(preparations + 1, ui.prepared)
+        assertEquals(1, ui.actions.count { it == "提交" })
+
+        val abnormalUi = Ui { testScheduler.currentTime }
+        val abnormalDriver = AndroidVisitDriver(abnormalUi, VisitChoiceVerifier { _, _ -> }, Fence(), returnVision(), { testScheduler.currentTime })
+        readyForm(abnormalDriver); abnormalDriver.prepareSubmission()
+        abnormalUi.form = abnormalUi.form.copy(nodes = abnormalUi.form.nodes.map {
+            when (it.path) { "r/6" -> it.copy(selected = false); "r/7" -> it.copy(selected = true); else -> it }
+        })
+        try { abnormalDriver.execute(VisitStep.SUBMIT); fail("Abnormal state submitted") } catch (_: VisitMismatch) { }
+        assertFalse(abnormalDriver.pendingSubmission)
+        assertFalse(abnormalUi.actions.contains("提交"))
+    }
 
     @Test fun imagePreparationFailureDoesNotMarkOrSubmitAndCanBeRetried() = runTest {
         val ui = Ui { testScheduler.currentTime }.apply { preparationFailure = true }

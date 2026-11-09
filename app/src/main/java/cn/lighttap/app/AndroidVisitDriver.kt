@@ -71,19 +71,51 @@ class AndroidVisitDriver internal constructor(
     private var opening = false
     private var openingAt: Long? = null
     private var retryOpening = false
+    private var preparedSubmission: Pair<UiTree, Long>? = null
+    private var preparationMs = 1_250L
     private var returnObservation: VisitReturnObservation? = null
     var lastConfirmation: ReturnConfirmation? = null
         private set
     var returnChecks = 0
         private set
-    private val observations = VisitObservation(now, diagnostics) { bridge.capture() }
+    private val observations = VisitObservation(now, diagnostics, ::sameVisitPage) { bridge.capture() }
     override val recoveryStep: VisitStep? get() = when { pendingSubmission -> VisitStep.WAIT_LIST; retryOpening -> VisitStep.OPEN_FORM; opening -> VisitStep.WAIT_FORM; else -> null }
     override val pendingSubmission: Boolean get() = fence.hash != null
     override val managesSubmissionTiming = true
     override fun submissionWaitMs(intervalMs: Long) = fence.submissionWaitMs(intervalMs)
     private fun pendingHash() = fence.hash
-    override suspend fun begin() { selected = null; confirmedList = null; confirmedCount = null; confirmedTop = null; scrolls = 0; opening = false; openingAt = null; retryOpening = false; returnObservation = null }
-    private suspend fun stable(): UiTree = observations.stable()
+    override suspend fun begin() { invalidatePrepared(); selected = null; confirmedList = null; confirmedCount = null; confirmedTop = null; scrolls = 0; opening = false; openingAt = null; retryOpening = false; returnObservation = null }
+    private suspend fun stable(initial: UiTree? = null): UiTree = observations.stable(initial)
+    override val submissionPreparationLeadMs get() = (preparationMs + 250).coerceIn(500, 8_000)
+    override fun invalidatePrepared() { preparedSubmission = null; bridge.discardSubmit() }
+    override suspend fun prepareSubmission() {
+        invalidatePrepared()
+        if (pendingSubmission) throw VisitMismatch("已有未确认提交，禁止再次提交")
+        val started = now()
+        prepareUi()
+        val tree = checkedForm()
+        contract.verifyValues(tree)
+        val checkedAt = now()
+        bridge.prepareSubmit(tree, contract.submit(tree))
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        preparedSubmission = tree to checkedAt
+        preparationMs = (now() - started).coerceAtLeast(0)
+    }
+    private suspend fun submissionTree(): UiTree {
+        val prepared = preparedSubmission
+        if (prepared != null) {
+            val fresh = observations.read()
+            val age = now() - prepared.second
+            if (age in 0..3_000 && sameVisitPage(prepared.first, fresh)) {
+                contract.form(fresh, selected ?: throw VisitMismatch("缺少本轮记录，不能操作"), visualFallback = true)
+                contract.verifyValues(fresh)
+                if (bridge.submissionPrepared(fresh, contract.submit(fresh))) return fresh
+            }
+        }
+        // Changed/expired evidence is never used to save time at the deadline.
+        prepareSubmission()
+        return preparedSubmission!!.first
+    }
     override suspend fun validate(step: VisitStep) {
         // execute() obtains and validates a fresh snapshot before every action.
         // Reading here as well doubled traversals and inspected half-published
@@ -117,7 +149,7 @@ class AndroidVisitDriver internal constructor(
                 if (pendingSubmission) throw VisitMismatch("仍有未确认提交，不能以空列表结束")
                 val frame = returnVision.inspect(tree)
                 diagnostics.record(VisitDebugEvent(VisitDebugKind.RETURN_CHECK, step = step, records = 0, visual = frame.state))
-                if (frame.state != ReturnVisual.CLEAR || contract.records(stable()).isNotEmpty()) throw VisitMismatch("空列表画面尚未稳定，请查看后继续")
+                if (frame.state != ReturnVisual.CLEAR || contract.records(stable(tree)).isNotEmpty()) throw VisitMismatch("空列表画面尚未稳定，请查看后继续")
                 VisitEffect(message = "待办已处理完", emptyList = true)
             } else {
                 selected = records.first()
@@ -174,14 +206,15 @@ class AndroidVisitDriver internal constructor(
         }
         VisitStep.SUBMIT -> {
             if (submissionWaitMs(MIN_SUBMISSION_INTERVAL_MS) > 0) throw VisitMismatch("距上次提交不足 61 秒，请等待后继续")
-            val tree = checkedForm(); contract.verifyValues(tree)
+            val tree = submissionTree(); contract.verifyValues(tree)
             if (pendingSubmission) throw VisitMismatch("已有未确认提交，禁止再次提交")
             val button = contract.submit(tree)
             val record = selected ?: throw VisitMismatch("缺少记录核验信息")
-            // Image recognition may fail without dispatching anything. Finish
-            // that read-only work before marking an attempted submission.
-            bridge.prepareSubmit(tree, button)
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            // Recheck the fence immediately before marking: no preparation or
+            // waiting path is allowed to move the submission deadline earlier.
+            if (submissionWaitMs(MIN_SUBMISSION_INTERVAL_MS) > 0) throw VisitMismatch("距上次提交不足 61 秒，请等待后继续")
+            preparedSubmission = null
             // Persist a non-reversible record digest before dispatch. Survives stop/process death.
             if (!fence.mark(record.fingerprint, bridge.target)) throw VisitMismatch("无法保存提交保护标记，禁止提交")
             lastConfirmation = null; returnObservation = null; returnChecks = 0
@@ -277,14 +310,15 @@ class AndroidVisitDriver internal constructor(
         // ACTION_SET_TEXT can acknowledge before the WebView publishes its updated node.
         // Observe only; never dispatch the write again or accept a different nonempty value.
         var remainingChecks = 12
+        var updated: UiTree
         while (true) {
             val observed = observations.read(); checkForm(observed)
             val actual = contract.fieldValue(observed, label)
-            if (actual == value) break
+            if (actual == value) { updated = observed; break }
             if (actual.isNotEmpty() || --remainingChecks <= 0) throw VisitMismatch("填写后回读不一致，禁止继续")
             delay(100)
         }
-        val after = stable(); checkForm(after)
+        val after = stable(updated); checkForm(after)
         if (contract.fieldValue(after, label) != value) throw VisitMismatch("填写后回读不一致，禁止继续")
         return VisitEffect(message = "本字段填写并回读通过；未执行其他字段操作")
     }
@@ -293,6 +327,9 @@ class AndroidVisitDriver internal constructor(
         if (fence.target != bridge.target) throw VisitMismatch("未确认提交属于其他目标应用")
         val observer = returnObservation ?: VisitReturnObservation(fence.pendingClickMs).also { returnObservation = it }
         while (true) {
+            // Cooldown before both the tree and image, preserving their order
+            // and the start-to-start cadence of normal-return observations.
+            returnVision.prepare()
             val started = now()
             returnChecks++
             val tree = try { bridge.capture() } catch (e: VisitReadPending) {
@@ -354,7 +391,7 @@ class AndroidVisitDriver internal constructor(
                 durationMs = now() - waitStarted, form = tree.has("新增"), loading = contract.loading(tree)))
             if (!contract.loading(tree)) {
                 if (form && tree.has("新增")) {
-                    val ready = stable()
+                    val ready = stable(tree)
                     // Wait for the state controls as well as the title. Check the
                     // state before normal-only inputs: abnormal can change their layout.
                     if (formPublished(ready)) {
@@ -363,7 +400,7 @@ class AndroidVisitDriver internal constructor(
                     }
                 }
                 if (!form && tree.has("待办") && !tree.has("新增")) {
-                    val ready = stable()
+                    val ready = stable(tree)
                     val records = contract.records(ready)
                     val old = pendingHash() ?: throw VisitMismatch("缺少提交保护标记")
                     // Navigation can finish before the server refresh removes
@@ -402,5 +439,5 @@ class AndroidVisitDriver internal constructor(
         if (top.fingerprint.isEmpty()) throw VisitMismatch("记录核对失败")
         return "列表、顶部记录和走访按钮可读；未点击"
     }
-    override fun release() { selected = null; confirmedList = null; confirmedCount = null; confirmedTop = null; scrolls = 0; opening = false; openingAt = null; retryOpening = false }
+    override fun release() { invalidatePrepared(); selected = null; confirmedList = null; confirmedCount = null; confirmedTop = null; scrolls = 0; opening = false; openingAt = null; retryOpening = false }
 }

@@ -36,6 +36,8 @@ internal class SurfaceVisitUiAccess(private val delegate: VisitUiAccess, private
     override val lastClickDispatchMs get() = delegate.lastClickDispatchMs
     override suspend fun capture() = delegate.capture()
     override suspend fun prepareSubmit(tree: UiTree, node: UiNode) = delegate.prepareSubmit(tree, node)
+    override fun submissionPrepared(tree: UiTree, node: UiNode) = delegate.submissionPrepared(tree, node)
+    override fun discardSubmit() = delegate.discardSubmit()
     override suspend fun perform(tree: UiTree, node: UiNode, action: Int, value: String?) =
         surface.clear(listOf(node.bounds)) { delegate.perform(tree, node, action, value) }
     override suspend fun openVisit(tree: UiTree, node: UiNode) =

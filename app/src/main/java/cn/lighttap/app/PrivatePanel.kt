@@ -36,6 +36,9 @@ fun PrivatePanel(model: AppModel) {
     val settings by local.settings.collectAsStateWithLifecycle()
     val state by local.state.collectAsStateWithLifecycle()
     val service by model.service.collectAsStateWithLifecycle()
+    LaunchedEffect(settings.recognition, service) {
+        if (settings.recognition == VisitRecognition.IMAGE) local.controller?.warmImageRecognition()
+    }
     val screen by model.screen.collectAsStateWithLifecycle()
     val verified by local.verified.collectAsStateWithLifecycle()
     val probe by local.probeResult.collectAsStateWithLifecycle()

@@ -58,6 +58,9 @@ interface VisitDriver {
     val recoveryStep: VisitStep? get() = if (pendingSubmission) VisitStep.WAIT_LIST else null
     fun submissionWaitMs(intervalMs: Long): Long = 0
     val managesSubmissionTiming: Boolean get() = false
+    val submissionPreparationLeadMs: Long get() = 0
+    suspend fun prepareSubmission() = Unit
+    fun invalidatePrepared() = Unit
     suspend fun begin()
     suspend fun validate(step: VisitStep)
     suspend fun execute(step: VisitStep): VisitEffect

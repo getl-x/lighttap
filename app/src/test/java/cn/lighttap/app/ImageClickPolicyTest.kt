@@ -40,6 +40,40 @@ class ImageClickPolicyTest {
         assertEquals(textBox, ImageClickLocator.locate(listOf(ImageText(" 走 访 ", .98f, textBox),
             ImageText("走访", .99f, UiBox(540, 800, 630, 840)), ImageText("走访记录", .99f, button)), "走访", button, 720, 1600))
     }
+    @Test fun ocrRegionTracksTheCurrentButtonAndClampsToScreen() {
+        val region = imageOcrRegion(button, 720, 1600)
+        assertTrue(region.left <= button.left && region.top <= button.top)
+        assertTrue(region.right >= button.right && region.bottom >= button.bottom)
+        assertTrue((region.right-region.left) * (region.bottom-region.top) < 720 * 1600 / 10)
+        assertEquals(UiBox(0, 0, 108, 48), imageOcrRegion(UiBox(0, 0, 100, 40), 720, 1600))
+        assertThrows(VisitMismatch::class.java) { imageOcrRegion(UiBox(-1, 0, 100, 40), 720, 1600) }
+    }
+    @Test fun knownCountdownAndHiddenDecorationCanChangeOnARecognizedPage() {
+        val before = list().copy(nodes = list().nodes + UiNode("r/timer", text = "倒计时53天") +
+            UiNode("r/decoration", text = "hidden before", visible = false))
+        val after = before.change("r/timer") { it.copy(text = "倒计时52天") }
+            .change("r/decoration") { it.copy(text = "hidden after") }
+        assertTrue(sameVisitPage(before, after))
+        assertTrue(sameVisitPage(before, after.copy(nodes = after.nodes.filterNot { it.path == "r/decoration" })))
+    }
+    @Test fun criticalChangesAndUnknownVisibleTextRemainUnstable() {
+        val tree = list().copy(nodes = list().nodes + UiNode("r/timer", text = "倒计时53天") + UiNode("r/message", text = "提示甲"))
+        for (changed in listOf(tree.change("r/2/0") { it.copy(text = "样例乙") },
+            tree.change("r/2/3") { it.copy(text = "1/1") }, tree.change("r/0") { it.copy(selected = false) },
+            tree.change("r/message") { it.copy(text = "提示乙") }, tree.change("r/timer") { it.copy(text = "正在加载") },
+            tree.copy(nodes = tree.nodes + UiNode("r/popup", text = "确认", clickable = true))))
+            assertFalse(sameVisitPage(tree, changed))
+    }
+    @Test fun hiddenIdentityAndInteractiveCountdownAreNeverIgnored() {
+        val tree = list().change("r/2/2") { it.copy(visible = false) }
+        assertFalse(sameVisitPage(tree, tree.change("r/2/2") { it.copy(text = "居住地址：其他地址") }))
+        val interactive = list().copy(nodes = list().nodes + UiNode("r/timer", text = "倒计时53天", clickable = true))
+        assertFalse(sameVisitPage(interactive, interactive.change("r/timer") { it.copy(text = "倒计时52天") }))
+    }
+    @Test fun unrecognizedPageDoesNotGainRelaxedStability() {
+        val a = UiTree("fixture", 1, listOf(UiNode("r"), UiNode("r/timer", text = "倒计时53天")))
+        assertFalse(sameVisitPage(a, a.change("r/timer") { it.copy(text = "倒计时52天") }))
+    }
     @Test fun wrongLabelLowConfidenceAndDuplicateCandidateAreRejected() {
         for (lines in listOf(emptyList(), listOf(ImageText("走访记录", .99f, textBox)),
             listOf(ImageText("走访", .89f, textBox)), listOf(ImageText("走访", Float.NaN, textBox)),

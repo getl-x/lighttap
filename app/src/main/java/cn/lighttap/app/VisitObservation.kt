@@ -7,17 +7,20 @@ import kotlinx.coroutines.withTimeoutOrNull
 class VisitObservation(
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
     private val diagnostics: VisitDiagnostics = VisitDiagnostics.NONE,
+    private val equivalent: (UiTree, UiTree) -> Boolean = { a, b -> a == b },
     private val capture: suspend () -> UiTree,
 ) {
-    suspend fun stable(): UiTree {
+    suspend fun stable(initial: UiTree? = null): UiTree {
         val started = now()
         var attempts = 0
         val result = withTimeoutOrNull(STABLE_TIMEOUT_MS) {
-            var previous: UiTree? = null
+            var previous: UiTree? = initial
+            // A just-read seed counts as the first observation, never as both.
+            if (initial != null) delay(80)
             while (true) {
                 attempts++
                 val current = try { capture() } catch (_: VisitReadPending) { null }
-                val same = current != null && current == previous
+                val same = current != null && previous?.let { equivalent(it, current) } == true
                 diagnostics.record(VisitDebugEvent(VisitDebugKind.STABILITY, attempt = attempts,
                     durationMs = now() - started, waitMs = STABLE_TIMEOUT_MS, nodes = current?.nodes?.size,
                     ok = same, delta = if (current != null && previous != null) snapshotDelta(previous, current) else null))

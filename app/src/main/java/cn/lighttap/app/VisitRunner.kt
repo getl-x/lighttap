@@ -61,7 +61,20 @@ class VisitRunner(
                         stepBudget = 30_000
                         continue
                     }
-                    if (step == VisitStep.SUBMIT) awaitSubmissionSlot(token)
+                    if (step == VisitStep.SUBMIT) {
+                        val lead = if (state.value.execution == VisitExecution.FORMAL) driver.submissionPreparationLeadMs else 0
+                        if (lead > 0) {
+                            awaitSubmissionSlot(token, lead)
+                            ensureActive()
+                            if (token != generation) return@launch
+                            mutable.value = state.value.copy(message = "正在提前核验提交页面", pendingSubmission = driver.pendingSubmission)
+                            stepSince = now()
+                            withTimeout(stepBudget.coerceAtLeast(1)) { driver.prepareSubmission() }
+                            debug(VisitDebugKind.SUBMIT_PREPARED, durationMs = stepSince?.let { now() - it })
+                            chargeStep()
+                        }
+                        awaitSubmissionSlot(token)
+                    }
                     ensureActive()
                     if (token != generation) return@launch
                     mutable.value = state.value.copy(message = "正在${step.title}", pendingSubmission = driver.pendingSubmission)
@@ -140,14 +153,14 @@ class VisitRunner(
         val local = lastSubmissionAt?.let { (settings.waitMs - (now() - it).coerceAtLeast(0)).coerceAtLeast(0) } ?: 0
         return maxOf(local, driver.submissionWaitMs(settings.waitMs))
     }
-    private suspend fun awaitSubmissionSlot(token: Long) {
+    private suspend fun awaitSubmissionSlot(token: Long, stopAtMs: Long = 0) {
         var waiting = false
         while (token == generation && currentCoroutineContext().isActive) {
             val left = remainingSubmissionWait()
-            if (left <= 0) break
+            if (left <= stopAtMs) break
             mutable.value = state.value.copy(status = VisitStatus.WAITING, remainingWaitMs = left, message = "填写完成，等待提交间隔")
             if (!waiting) { debug(VisitDebugKind.WAIT, waitMs = left); waiting = true }
-            delay(minOf(1_000, left))
+            delay(minOf(1_000, left - stopAtMs))
         }
         currentCoroutineContext().ensureActive()
         if (token == generation) {
@@ -159,6 +172,7 @@ class VisitRunner(
     fun pause(reason: String = "用户暂停", error: Boolean = false) {
         if (!state.value.active || state.value.status == VisitStatus.FINISH_CONFIRM) return
         chargeStep(); generation++; worker?.cancel(); worker = null
+        driver.invalidatePrepared()
         mutable.value = state.value.copy(status = if (error) VisitStatus.ERROR else VisitStatus.PAUSED, message = reason, pendingSubmission = driver.pendingSubmission,
             step = driver.recoveryStep ?: state.value.step)
         debug(if (error) VisitDebugKind.ERROR else VisitDebugKind.PAUSE, reason = reason)
@@ -166,6 +180,7 @@ class VisitRunner(
     }
     private fun fail(reason: String) {
         chargeStep()
+        driver.invalidatePrepared()
         mutable.value = state.value.copy(status = VisitStatus.ERROR, message = reason, pendingSubmission = driver.pendingSubmission,
             step = driver.recoveryStep ?: state.value.step)
         debug(VisitDebugKind.ERROR, reason = reason)

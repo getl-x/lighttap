@@ -25,12 +25,11 @@ import kotlin.math.floor
 internal class AndroidImageRecognition(private val service: AccessibilityService) {
     private val mutex = Mutex()
     private var engine: PaddleOCR? = null
-    private var lastScreenshotAt = 0L
     private var closed = false
 
-    suspend fun read(tree: UiTree, button: UiNode, navigation: Boolean): ImageClickEvidence = mutex.withLock {
+    private suspend fun ensureEngine(): PaddleOCR {
         if (closed) throw VisitMismatch("图像识别服务已关闭，请重新开启")
-        val ocr = engine ?: try {
+        return engine ?: try {
             withContext(Dispatchers.IO) {
                 System.loadLibrary("opencv_java4")
                 // Own the initialized instance even if cancellation arrives
@@ -43,22 +42,29 @@ internal class AndroidImageRecognition(private val service: AccessibilityService
         } catch (error: CancellationException) { throw error }
         catch (_: LinkageError) { throw VisitMismatch("本地识字库与此设备不兼容，已暂停") }
         catch (_: Exception) { throw VisitMismatch("本地识字模型加载失败，已暂停") }
+    }
+
+    /** Loads bundled files only. Does not capture a screen or dispatch input. */
+    suspend fun warmUp() = mutex.withLock { ensureEngine(); Unit }
+
+    suspend fun read(tree: UiTree, button: UiNode, navigation: Boolean): ImageClickEvidence = mutex.withLock {
+        val ocr = ensureEngine()
         currentCoroutineContext().ensureActive()
-        val remaining = 500 - (SystemClock.elapsedRealtime() - lastScreenshotAt)
-        if (remaining > 0) delay(remaining)
         val (bitmap, capturedAt) = screenshot()
-        lastScreenshotAt = capturedAt
         val pixels = IntArray(bitmap.width * bitmap.height)
         try {
-            val result = try { ocr.recognize(bitmap) }
+            val region = imageOcrRegion(button.bounds, bitmap.width, bitmap.height)
+            val crop = Bitmap.createBitmap(bitmap, region.left, region.top, region.right - region.left, region.bottom - region.top)
+            val result = try { ocr.recognize(crop) }
                 catch (error: CancellationException) { throw error }
                 catch (_: LinkageError) { throw VisitMismatch("本地识字库与此设备不兼容，已暂停") }
                 catch (_: Exception) { throw VisitMismatch("本机图像识字失败，已暂停") }
+                finally { if (crop !== bitmap) { if (crop.isMutable) crop.eraseColor(android.graphics.Color.TRANSPARENT); crop.recycle() } }
             currentCoroutineContext().ensureActive()
             val lines = result.results.map { item ->
-                ImageText(item.text, item.confidence, UiBox(floor(item.box.points.minOf { it.x }).toInt(),
-                    floor(item.box.points.minOf { it.y }).toInt(), ceil(item.box.points.maxOf { it.x }).toInt(),
-                    ceil(item.box.points.maxOf { it.y }).toInt()))
+                ImageText(item.text, item.confidence, UiBox(region.left + floor(item.box.points.minOf { it.x }).toInt(),
+                    region.top + floor(item.box.points.minOf { it.y }).toInt(), region.left + ceil(item.box.points.maxOf { it.x }).toInt(),
+                    region.top + ceil(item.box.points.maxOf { it.y }).toInt()))
             }
             val box = ImageClickLocator.locate(lines, if (navigation) "走访" else "提交", button.bounds, bitmap.width, bitmap.height)
             bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
@@ -103,7 +109,7 @@ internal class AndroidImageRecognition(private val service: AccessibilityService
         } finally { sample.fill(0) }
     }
 
-    private suspend fun screenshot(): Pair<Bitmap, Long> = withTimeout(2_500) {
+    private suspend fun screenshot(): Pair<Bitmap, Long> = withTimeout(2_500) { VisitScreenshots.capture(service) {
         if (Build.VERSION.SDK_INT < 30) throw VisitMismatch("图像备用方式需要 Android 11 及以上")
         suspendCancellableCoroutine { continuation ->
             service.takeScreenshot(Display.DEFAULT_DISPLAY, Dispatchers.Default.asExecutor(), object : AccessibilityService.TakeScreenshotCallback {
@@ -136,7 +142,7 @@ internal class AndroidImageRecognition(private val service: AccessibilityService
                 }
             })
         }
-    }
+    } }
 
     suspend fun close() = mutex.withLock { closed = true; engine?.release(); engine = null }
 }
@@ -150,6 +156,7 @@ internal class AndroidImageVisitUiAccess(
         private set
     private val ocr = AndroidImageRecognition(service)
     private var prepared: PreparedImageClick? = null
+    private val clickGuard = ImageClickGuard(target)
     private val flow = ImageClickFlow(native, { tree, node, navigation ->
         val start = SystemClock.elapsedRealtime()
         try {
@@ -163,6 +170,16 @@ internal class AndroidImageVisitUiAccess(
         }
     }, { tree, box -> tap(tree, box) }, { SystemClock.elapsedRealtime() })
     override suspend fun capture() = native.capture()
+    override fun discardSubmit() { prepared = null }
+    override fun submissionPrepared(tree: UiTree, node: UiNode): Boolean {
+        val plan = prepared ?: return false
+        if (plan.consumed) return false
+        return try {
+            val current = clickGuard.reacquire(plan.request, plan.requestedNode, tree, false)
+            ImageClickLocator.validate(plan.evidence, current.bounds, false, SystemClock.elapsedRealtime())
+            current == node
+        } catch (_: VisitMismatch) { false }
+    }
     override suspend fun prepareSubmit(tree: UiTree, node: UiNode) {
         prepared = null
         val screen = tree.nodes.firstOrNull()?.bounds ?: throw VisitPreActionMismatch("无法读取当前界面")
@@ -173,7 +190,7 @@ internal class AndroidImageVisitUiAccess(
             val plan = prepared
             prepared = null
             lastClickDispatchMs = null
-            if (plan == null || plan.request != tree || plan.requestedNode != node)
+            if (plan == null || clickGuard.reacquire(plan.request, plan.requestedNode, tree, false) != node)
                 throw VisitPreActionMismatch("图像提交准备已失效，请重新核验")
             val screen = tree.nodes.first().bounds
             surface.clear(listOf(screen)) { flow.dispatch(plan) }
@@ -222,4 +239,5 @@ internal class AndroidImageVisitUiAccess(
         if (!complete) throw VisitMismatch("本次点击未确认完成，已暂停且不会自动重试")
     }
     suspend fun close() { prepared = null; ocr.close() }
+    suspend fun warmUp() = ocr.warmUp()
 }

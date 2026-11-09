@@ -6,7 +6,6 @@ import android.os.Build
 import android.os.SystemClock
 import android.view.Display
 import androidx.annotation.RequiresApi
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.Dispatchers
@@ -16,13 +15,9 @@ import kotlin.coroutines.resume
 fun interface VisitChoiceVerifier { suspend fun requireNormal(normal: UiNode, abnormal: UiNode) }
 
 class AndroidChoiceVision(private val service: AccessibilityService, private val surface: VisitSurfaceGuard = VisitSurfaceGuard()) : VisitChoiceVerifier {
-    private var lastCapture = 0L
     override suspend fun requireNormal(normal: UiNode, abnormal: UiNode) {
         if (Build.VERSION.SDK_INT < 30) throw VisitMismatch("此设备不支持本机视觉核验，已暂停")
         if (!normal.visible || !abnormal.visible || !normal.bounds.nonEmpty || !abnormal.bounds.nonEmpty) throw VisitMismatch("正常/异常按钮不完整可见，不能视觉核验")
-        val remaining = 450 - (SystemClock.elapsedRealtime() - lastCapture)
-        if (remaining > 0) delay(remaining)
-        lastCapture = SystemClock.elapsedRealtime()
         val frame = surface.clear(listOf(normal.bounds, abnormal.bounds)) { capture(normal.bounds, abnormal.bounds) }
         try {
             when (withContext(Dispatchers.Default) { OpenCvChoiceBackend.classify(frame, normal.bounds, abnormal.bounds) }) {
@@ -33,7 +28,7 @@ class AndroidChoiceVision(private val service: AccessibilityService, private val
         } finally { frame.erase() }
     }
     @RequiresApi(30)
-    private suspend fun capture(normal: UiBox, abnormal: UiBox): ChoiceFrame = withTimeout(2_000) {
+    private suspend fun capture(normal: UiBox, abnormal: UiBox): ChoiceFrame = withTimeout(2_000) { VisitScreenshots.capture(service) {
         suspendCancellableCoroutine { continuation ->
             service.takeScreenshot(Display.DEFAULT_DISPLAY, service.mainExecutor, object : AccessibilityService.TakeScreenshotCallback {
                 override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
@@ -63,5 +58,5 @@ class AndroidChoiceVision(private val service: AccessibilityService, private val
                 override fun onFailure(errorCode: Int) { if (continuation.isActive) continuation.resumeWith(Result.failure(VisitMismatch("本机视觉核验不可用，已暂停（系统码 $errorCode）"))) }
             })
         }
-    }
+    } }
 }

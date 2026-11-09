@@ -9,6 +9,18 @@ import org.junit.Test
 class VisitObservationTest {
     private val first = UiTree("fixture", 1, listOf(UiNode("r", text = "before")))
     private val ready = first.copy(nodes = listOf(UiNode("r", text = "ready")))
+    @Test fun freshSeedNeedsOneFurtherMatchingReadInsteadOfStartingOver() = runTest {
+        var reads = 0
+        assertEquals(ready, VisitObservation { reads++; ready }.stable(ready))
+        assertEquals(1, reads)
+        assertEquals(80L, testScheduler.currentTime)
+    }
+    @Test fun seedNeverPassesAfterAChangeWithoutAnotherMatchingRead() = runTest {
+        var reads = 0
+        assertEquals(ready, VisitObservation { reads++; ready }.stable(first))
+        assertEquals(2, reads)
+        assertEquals(160L, testScheduler.currentTime)
+    }
 
     @Test fun transientPublicationIsObservedUntilTwoSnapshotsAgree() = runTest {
         var reads = 0

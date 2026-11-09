@@ -24,6 +24,8 @@ interface VisitUiAccess {
     suspend fun capture(): UiTree
     /** Read-only preparation, before the runner writes its submission fence. */
     suspend fun prepareSubmit(tree: UiTree, node: UiNode) = Unit
+    fun submissionPrepared(tree: UiTree, node: UiNode): Boolean = true
+    fun discardSubmit() = Unit
     suspend fun perform(tree: UiTree, node: UiNode, action: Int, value: String? = null)
     /** Navigation is distinct from submission: it may use the node's own click
      * action without changing the single gesture used to submit. */
@@ -77,7 +79,7 @@ class AndroidUiBridge(private val service: AccessibilityService, override val ta
         try {
         guard()
         val fresh = captureFresh()
-        if (fresh != tree) throw VisitMismatch("执行前页面发生变化，已暂停")
+        if (!sameVisitPage(tree, fresh)) throw VisitMismatch("执行前页面发生变化，已暂停")
         if (!node.visible || !node.enabled || !node.bounds.nonEmpty) throw VisitMismatch("目标控件不可操作")
         val panel = withContext(Dispatchers.Main.immediate) { overlayBounds() }
         val notice = withContext(Dispatchers.Main.immediate) {

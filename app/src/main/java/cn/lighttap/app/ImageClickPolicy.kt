@@ -42,6 +42,16 @@ internal object ImageClickLocator {
     }
 }
 
+/** OCR sees only the current button and a little surrounding context. Full
+ * screenshots remain available for independent loading/selection checks. */
+internal fun imageOcrRegion(button: UiBox, width: Int, height: Int): UiBox {
+    if (!button.nonEmpty || button.left < 0 || button.top < 0 || button.right > width || button.bottom > height)
+        throw VisitMismatch("图像目标控件不完整可见，已暂停")
+    val padding = maxOf(8, minOf(button.right - button.left, button.bottom - button.top) / 8)
+    return UiBox((button.left - padding).coerceAtLeast(0), (button.top - padding).coerceAtLeast(0),
+        (button.right + padding).coerceAtMost(width), (button.bottom + padding).coerceAtMost(height))
+}
+
 /** Reacquire by meaning, with the existing exact record/value rules. Unrelated
  * countdown text may change during OCR; identity, window and target may not. */
 internal class ImageClickGuard(target: String) {
@@ -51,7 +61,7 @@ internal class ImageClickGuard(target: String) {
         if (before.windowId != after.windowId) throw VisitMismatch("图像识别期间目标窗口变化，已暂停")
         // A newly published dialog/overlay or changed control geometry is not
         // an unrelated text refresh. Never click through such a transition.
-        if (before.nodes.map { it.copy(text = "", description = "") } != after.nodes.map { it.copy(text = "", description = "") })
+        if (!sameVisitPage(before, after))
             throw VisitMismatch("图像识别期间页面结构变化，已暂停")
         val original: UiNode
         val current: UiNode
@@ -121,6 +131,8 @@ internal class SelectedVisitUiAccess(private val selected: () -> VisitRecognitio
     override val lastClickDispatchMs get() = active.lastClickDispatchMs
     override suspend fun capture() = active.capture()
     override suspend fun prepareSubmit(tree: UiTree, node: UiNode) = active.prepareSubmit(tree, node)
+    override fun submissionPrepared(tree: UiTree, node: UiNode) = active.submissionPrepared(tree, node)
+    override fun discardSubmit() { controls.discardSubmit(); images.discardSubmit() }
     override suspend fun perform(tree: UiTree, node: UiNode, action: Int, value: String?) = active.perform(tree, node, action, value)
     override suspend fun openVisit(tree: UiTree, node: UiNode) = active.openVisit(tree, node)
 }

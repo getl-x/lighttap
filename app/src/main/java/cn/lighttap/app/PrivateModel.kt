@@ -122,6 +122,7 @@ class PrivateModel(private val context: Context) {
         verified.value = preferences.getBoolean(updated.recognition.confirmationKey, false)
         saving.value = true
         settingsQueue.trySend(updated)
+        if (updated.recognition == VisitRecognition.IMAGE) controller?.warmImageRecognition()
     }
     fun connect(service: ClickAccessibilityService) {
         controller?.disconnect()
@@ -162,6 +163,22 @@ class PrivateController(private val service: ClickAccessibilityService, private 
         onCompleted = { vibration.complete(service.appModel.completionVibration.mode.value) }, diagnostics = model.debugLog)
     private var mode = VisitExecution.STEP_TEST
     private var shown = false
+    private var warming: Job? = null
+    fun warmImageRecognition() {
+        if (model.settings.value.recognition != VisitRecognition.IMAGE || warming?.isActive == true) return
+        warming = scope.launch {
+            val started = SystemClock.elapsedRealtime()
+            try {
+                imageBridge.warmUp()
+                model.debugLog.record(VisitDebugEvent(VisitDebugKind.MODEL_WARMUP,
+                    durationMs = SystemClock.elapsedRealtime() - started, ok = true))
+            } catch (error: CancellationException) { throw error }
+            catch (error: VisitMismatch) {
+                model.debugLog.record(VisitDebugEvent(VisitDebugKind.MODEL_WARMUP,
+                    durationMs = SystemClock.elapsedRealtime() - started, ok = false, reason = error.reason))
+            }
+        }
+    }
     private val probeCheck = ReadOnlyProbe(scope, { message ->
         overlay.setProbing(message == "正在只读检查，未执行操作")
         model.probeResult.value = message
@@ -203,6 +220,7 @@ class PrivateController(private val service: ClickAccessibilityService, private 
     }
     fun arm(execution: VisitExecution) {
         if (!authorized()) return
+        warmImageRecognition()
         if (probeCheck.active) { service.notice("只读检查进行中，请稍后开始"); return }
         if (runner.state.value.active) { service.notice("请先停止当前任务"); return }
         if (service.appModel.runtime.value.status in setOf(RunStatus.RUNNING, RunStatus.PAUSED)) { service.notice("请先停止普通连点任务"); return }
