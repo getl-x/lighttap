@@ -134,6 +134,7 @@ fun PrivatePanel(model: AppModel) {
                     }
                 }
             }
+            VisitDebugSettingsCard(local)
         }
     }
 }

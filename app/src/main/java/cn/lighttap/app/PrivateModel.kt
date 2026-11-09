@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.SystemClock
@@ -14,6 +15,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.time.LocalDateTime
+import java.io.File
+import org.json.JSONObject
 
 class PrivateModel(private val context: Context) {
     val session = PrivateSession()
@@ -43,6 +46,11 @@ class PrivateModel(private val context: Context) {
     val saving = MutableStateFlow(false)
     val history = MutableStateFlow<List<VisitHistoryEntry>>(emptyList())
     private val settingsScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    val debugLog = VisitDebugLog(File(context.noBackupFilesDir, "visit_debug"), settingsScope,
+        elapsedTime = { SystemClock.elapsedRealtime() })
+    internal val debugExports = VisitDebugExportStore(File(context.noBackupFilesDir, "visit_debug_exports"))
+    val debugExportBusy = MutableStateFlow(false)
+    val debugExportMessage = MutableStateFlow<String?>(null)
     private val settingsQueue = Channel<VisitSettings>(Channel.CONFLATED)
     init {
         settingsScope.launch {
@@ -61,6 +69,44 @@ class PrivateModel(private val context: Context) {
         // No tree, field values, record identity or screenshots enter this bounded in-memory log.
         if (previous.status == current.status && previous.lastStep == current.lastStep && previous.rounds == current.rounds) return
         history.value = (history.value + VisitHistoryEntry(System.currentTimeMillis(), current.rounds, current.step.title, current.message)).takeLast(30)
+    }
+    @Suppress("DEPRECATION")
+    internal suspend fun prepareDebugExport(): String {
+        val current = state.value
+        val screen = context.appModel.screen.value
+        val targetInfo = runCatching { context.packageManager.getPackageInfo(TARGET, 0) }.getOrNull()
+        val environment = JSONObject().put("appVersion", BuildConfig.VERSION_NAME).put("appVersionCode", BuildConfig.VERSION_CODE)
+            .put("androidApi", Build.VERSION.SDK_INT).put("androidVersion", Build.VERSION.RELEASE)
+            .put("manufacturer", Build.MANUFACTURER).put("model", Build.MODEL)
+            .put("targetVersion", targetInfo?.versionName ?: JSONObject.NULL)
+            .put("serviceConnected", controller != null).put("status", current.status.name).put("step", current.step.name)
+            .put("execution", current.execution.name).put("rounds", current.rounds).put("pendingSubmission", current.pendingSubmission)
+            .put("reason", safeVisitDebugReason(current.message)).put("intervalMs", settings.value.waitText.toLongOrNull()?.times(1_000) ?: JSONObject.NULL)
+        screen?.let { environment.put("screen", JSONObject().put("width", it.width).put("height", it.height)
+            .put("densityDpi", it.densityDpi).put("rotation", it.rotation)) }
+        val data = debugLog.snapshot(environment)
+        return withContext(Dispatchers.IO) { debugExports.prepare(data) }
+    }
+    internal fun finishDebugExport(id: String, uri: Uri?) {
+        if (debugExportBusy.value) return
+        debugExportBusy.value = true
+        settingsScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    if (uri != null) {
+                        val bytes = debugExports.read(id)
+                        val output = context.contentResolver.openOutputStream(uri, "wt") ?: error("No output stream")
+                        output.use { it.write(bytes); it.flush() }
+                    }
+                }
+                debugExportMessage.value = if (uri == null) "已取消调试日志导出" else "调试日志已导出，可将此文件发来排查"
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { debugExportMessage.value = "调试日志导出失败，请重新导出并检查保存位置" }
+            finally {
+                withContext(NonCancellable + Dispatchers.IO) { runCatching { debugExports.discard(id) } }
+                debugExportBusy.value = false
+            }
+        }
     }
     var controller: PrivateController? = null
         private set
@@ -90,14 +136,16 @@ class PrivateController(private val service: ClickAccessibilityService, private 
     private val overlay = PrivateOverlay(service, this)
     private val workReminder = WorkReminderDisplay(service)
     private val vibration = service.appModel.vibration
-    private val bridge = AndroidUiBridge(service, PrivateModel.TARGET) { overlay.bounds() }
-    private val driver = AndroidVisitDriver(service, bridge, AndroidChoiceVision(service))
+    private val bridge = DiagnosedVisitUiAccess(AndroidUiBridge(service, PrivateModel.TARGET) { overlay.bounds() },
+        model.debugLog, { SystemClock.elapsedRealtime() })
+    private val driver = AndroidVisitDriver(service, bridge, AndroidChoiceVision(service), model.debugLog)
     private val runner = VisitRunner(scope, driver, { SystemClock.elapsedRealtime() }, { notifyPause() }, { model.confirmTest() },
-        onCompleted = { vibration.complete(service.appModel.completionVibration.mode.value) })
+        onCompleted = { vibration.complete(service.appModel.completionVibration.mode.value) }, diagnostics = model.debugLog)
     private var mode = VisitExecution.STEP_TEST
     private var shown = false
     private val probeCheck = ReadOnlyProbe(scope, { message ->
         model.probeResult.value = message
+        model.debugLog.record(VisitDebugEvent(VisitDebugKind.PROBE, reason = message))
         if (shown) overlay.render(runner.state.value.copy(message = message), mode)
     }, { service.notice(it) }, { driver.probe() })
     init {
@@ -136,6 +184,7 @@ class PrivateController(private val service: ClickAccessibilityService, private 
         if (error != null) { service.notice(error); return }
         if (!runCatching { service.packageManager.getApplicationInfo(PrivateModel.TARGET, 0) }.isSuccess) { service.notice("未发现已绑定的目标应用"); return }
         mode = execution; service.hideOverlay(); shown = true
+        model.debugLog.record(VisitDebugEvent(VisitDebugKind.ARM, execution = mode, pending = driver.pendingSubmission))
         overlay.render(runner.state.value, mode)
         service.notice("请切换到目标待办页，再通过控制条开始或只读检查")
     }

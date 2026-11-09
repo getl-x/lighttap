@@ -33,8 +33,9 @@ class AndroidVisitDriverTest {
         override var pendingClickMs: Long? = null
         override var pendingAnchorMs: Long? = null
         var lastStamp: Long? = null
+        var onClear: () -> Unit = {}
         override fun mark(hash: String, target: String): Boolean { this.hash = hash; this.target = target; lastStamp = now(); return true }
-        override fun clear(): Boolean { hash = null; target = null; pendingClickMs = null; pendingAnchorMs = null; return true }
+        override fun clear(): Boolean { hash = null; target = null; pendingClickMs = null; pendingAnchorMs = null; onClear(); return true }
         override fun recordSubmission(): Boolean { lastStamp = now(); return true }
         override fun recordClick(at: Long): Boolean { pendingClickMs = at; lastStamp = at; return true }
         override fun confirmSubmission(at: Long): Boolean { pendingAnchorMs = pendingAnchorMs ?: at; lastStamp = pendingAnchorMs; return true }
@@ -51,7 +52,9 @@ class AndroidVisitDriverTest {
         private var readyAt = 0L
         val actions = mutableListOf<String>()
         var failAfterSubmit = false
+        var listOverride: UiTree? = null
         override suspend fun capture(): UiTree {
+            listOverride?.let { return it }
             if (submitted) return if (now() < readyAt) listTree() else listTree().copy(nodes = listTree().nodes.take(3) + UiNode("r/empty", text = "暂无待办"))
             if (opened) return if (now() < readyAt) form.copy(nodes = form.nodes.take(3)) else form
             return listTree()
@@ -61,7 +64,7 @@ class AndroidVisitDriverTest {
             actions += if (action == AccessibilityNodeInfo.ACTION_SET_TEXT) node.path else node.text
             when {
                 value != null -> form = form.copy(nodes = form.nodes.map { if (it.path == node.path) it.copy(text = value) else it })
-                node.text == "走访" -> { opened = true; readyAt = now() + publicationDelay }
+                node.text == "走访" -> { listOverride = null; opened = true; readyAt = now() + publicationDelay }
                 node.text == "提交" -> { lastClickDispatchMs = now(); submitted = true; readyAt = now() + refreshDelay; if (failAfterSubmit) throw VisitMismatch("accepted_but_callback_lost") }
             }
         }
@@ -69,6 +72,87 @@ class AndroidVisitDriverTest {
     private fun TestScope.runner(driver: VisitDriver) = VisitRunner(backgroundScope, driver, { testScheduler.currentTime })
     private fun TestScope.returnVision() = VisitReturnVision { ReturnFrame(ReturnVisual.CLEAR, testScheduler.currentTime) }
     private val plan = VisitSettings(targetPackage = "fixture")
+
+    private fun expandedList(): UiTree {
+        val first = listTree()
+        val extra = first.nodes.filter { it.path == "r/2" || it.path.startsWith("r/2/") }.map {
+            it.copy(path = it.path.replaceFirst("r/2", "r/3"), text = if (it.text == "样例甲") "样例乙" else it.text,
+                bounds = it.bounds.copy(top = it.bounds.top + 500, bottom = it.bounds.bottom + 500))
+        }
+        return first.copy(nodes = first.nodes + extra)
+    }
+
+    @Test fun changedBottomRowsAfterConfirmationStartFreshListSelection() = runTest {
+        val ui = Ui { testScheduler.currentTime }.apply { listOverride = listTree() }
+        val fence = Fence().apply { mark("previous-record", "fixture") }
+        val events = mutableListOf<VisitDebugEvent>()
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, fence, returnVision(),
+            { testScheduler.currentTime }, diagnostics = VisitDiagnostics { events += it })
+        driver.execute(VisitStep.WAIT_LIST)
+        ui.listOverride = expandedList()
+        driver.validate(VisitStep.GAP)
+        driver.execute(VisitStep.FIND_LIST)
+        val list = events.last { it.kind == VisitDebugKind.LIST }
+        assertEquals(1, list.previousRecords); assertEquals(2, list.records)
+        assertEquals(true, list.listChanged); assertEquals(true, list.topUnchanged)
+        driver.execute(VisitStep.OPEN_FORM)
+        assertEquals(listOf("走访"), ui.actions)
+        assertFalse(driver.pendingSubmission)
+    }
+
+    @Test fun changedTopAfterFreshSelectionStillRejectsClick() = runTest {
+        val ui = Ui { testScheduler.currentTime }.apply { listOverride = listTree() }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, Fence(), returnVision(), { testScheduler.currentTime })
+        driver.execute(VisitStep.FIND_LIST)
+        ui.listOverride = listTree().copy(nodes = listTree().nodes.map { if (it.path == "r/2/0") it.copy(text = "样例乙") else it })
+        try { driver.execute(VisitStep.OPEN_FORM); fail("Selected record changed") }
+        catch (e: VisitMismatch) { assertEquals("顶部记录变化，禁止点击", e.reason) }
+        assertTrue(ui.actions.isEmpty())
+    }
+
+    @Test fun runnerContinuesPastChangedBottomRowsAndCountsOnlyConfirmedResults() = runTest {
+        val ui = Ui { testScheduler.currentTime }.apply { listOverride = listTree() }
+        val fence = Fence { testScheduler.currentTime }.apply {
+            mark("previous-record", "fixture")
+            onClear = { if (!ui.submitted) ui.listOverride = expandedList() }
+        }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, fence, returnVision(), { testScheduler.currentTime })
+        val runner = runner(driver)
+        runner.start(plan.copy(mode = VisitRunMode.COUNT, countText = "2"), VisitExecution.FORMAL)
+        advanceTimeBy(65_000); runCurrent()
+        assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
+        assertEquals(2L, runner.state.value.rounds)
+        assertEquals(1, ui.actions.count { it == "提交" })
+        assertEquals(1, ui.actions.count { it == "走访" })
+        assertFalse(driver.pendingSubmission)
+    }
+
+    @Test fun gapWithoutConfirmationOrWithPendingSubmitStillRejects() = runTest {
+        val ui = Ui { testScheduler.currentTime }
+        val fence = Fence()
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, fence, returnVision(), { testScheduler.currentTime })
+        try { driver.validate(VisitStep.GAP); fail("No previous confirmation") }
+        catch (e: VisitMismatch) { assertEquals("缺少上一轮结果确认，不能开始下一轮", e.reason) }
+        fence.mark("pending", "fixture")
+        try { driver.validate(VisitStep.GAP); fail("Pending result must be observed first") }
+        catch (e: VisitMismatch) { assertEquals("仍有未确认提交，禁止开始下一轮", e.reason) }
+        assertTrue(ui.actions.isEmpty()); assertTrue(driver.pendingSubmission)
+    }
+
+    @Test fun suppressedReturnParsingReasonIsRecordedWithoutRepeatingSubmit() = runTest {
+        val ui = Ui { testScheduler.currentTime }.apply {
+            listOverride = listTree().copy(nodes = listTree().nodes.map { if (it.text == "待办") it.copy(selected = false) else it })
+        }
+        val fence = Fence().apply { mark("previous-record", "fixture") }
+        val events = mutableListOf<VisitDebugEvent>()
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, fence, returnVision(),
+            { testScheduler.currentTime }, diagnostics = VisitDiagnostics { events += it })
+        val job = backgroundScope.launch { driver.execute(VisitStep.WAIT_LIST) }
+        runCurrent(); advanceTimeBy(2_000); runCurrent()
+        assertTrue(events.any { it.kind == VisitDebugKind.RETURN_CHECK && it.reason == "无法确认当前选中待办页签" })
+        assertTrue(job.isActive); assertTrue(driver.pendingSubmission); assertTrue(ui.actions.isEmpty())
+        job.cancelAndJoin()
+    }
 
     @Test fun abnormalWithChangedFieldsReportsStateBeforeFieldMismatch() = runTest {
         val ui = Ui { testScheduler.currentTime }

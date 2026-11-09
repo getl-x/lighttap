@@ -54,13 +54,16 @@ class AndroidVisitDriver internal constructor(
     private val bridge: VisitUiAccess, private val vision: VisitChoiceVerifier, private val fence: VisitSubmissionFence,
     private val returnVision: VisitReturnVision, private val now: () -> Long,
     private val successHint: (Long?, Long) -> Boolean = { _, _ -> false },
+    private val diagnostics: VisitDiagnostics = VisitDiagnostics.NONE,
 ) : VisitDriver {
-    constructor(service: ClickAccessibilityService, bridge: VisitUiAccess, vision: VisitChoiceVerifier) : this(
+    constructor(service: ClickAccessibilityService, bridge: VisitUiAccess, vision: VisitChoiceVerifier, diagnostics: VisitDiagnostics = VisitDiagnostics.NONE) : this(
         bridge, vision, AndroidSubmissionFence(service), AndroidReturnVision(service), { SystemClock.elapsedRealtime() },
-        { clicked, time -> service.visitSuccessSignals.since(clicked, time) })
+        { clicked, time -> service.visitSuccessSignals.since(clicked, time) }, diagnostics)
     private val contract = VisitContract(bridge.target)
     private var selected: VisitRecord? = null
     private var confirmedList: String? = null
+    private var confirmedCount: Int? = null
+    private var confirmedTop: String? = null
     private var scrolls = 0
     private var opening = false
     private var returnObservation: VisitReturnObservation? = null
@@ -74,7 +77,7 @@ class AndroidVisitDriver internal constructor(
     override val managesSubmissionTiming = true
     override fun submissionWaitMs(intervalMs: Long) = fence.submissionWaitMs(intervalMs)
     private fun pendingHash() = fence.hash
-    override suspend fun begin() { selected = null; confirmedList = null; scrolls = 0; opening = false; returnObservation = null }
+    override suspend fun begin() { selected = null; confirmedList = null; confirmedCount = null; confirmedTop = null; scrolls = 0; opening = false; returnObservation = null }
     private suspend fun stable(): UiTree = observations.stable()
     override suspend fun validate(step: VisitStep) {
         // execute() obtains and validates a fresh snapshot before every action.
@@ -85,9 +88,11 @@ class AndroidVisitDriver internal constructor(
                 if (!pendingSubmission) throw VisitMismatch("缺少提交结果核验标记，不能计数")
             }
             VisitStep.GAP -> {
-                val tree = observations.read()
-                val signature = contract.listSignature(tree)
-                if (confirmedList == null || signature != confirmedList) throw VisitMismatch("下一轮开始前列表发生变化，请查看后继续")
+                if (pendingSubmission) throw VisitMismatch("仍有未确认提交，禁止开始下一轮")
+                if (confirmedList == null) throw VisitMismatch("缺少上一轮结果确认，不能开始下一轮")
+                // The confirmed list belongs to the completed submission. The
+                // next FIND_LIST selects from a fresh validated page, and OPEN_FORM
+                // still rejects any change to that newly selected record.
             }
             else -> Unit
         }
@@ -96,9 +101,15 @@ class AndroidVisitDriver internal constructor(
         VisitStep.FIND_LIST -> {
             val tree = stable()
             val records = contract.records(tree)
+            val signature = if (records.isEmpty()) "empty" else records.joinToString("|") { it.fingerprint }
+            diagnostics.record(VisitDebugEvent(VisitDebugKind.LIST, step = step, records = records.size,
+                previousRecords = confirmedCount, listChanged = confirmedList?.let { it != signature },
+                topUnchanged = confirmedList?.let { confirmedTop == records.firstOrNull()?.fingerprint }, pending = pendingSubmission))
             if (records.isEmpty()) {
                 if (pendingSubmission) throw VisitMismatch("仍有未确认提交，不能以空列表结束")
-                if (returnVision.inspect(tree).state != ReturnVisual.CLEAR || contract.records(stable()).isNotEmpty()) throw VisitMismatch("空列表画面尚未稳定，请查看后继续")
+                val frame = returnVision.inspect(tree)
+                diagnostics.record(VisitDebugEvent(VisitDebugKind.RETURN_CHECK, step = step, records = 0, visual = frame.state))
+                if (frame.state != ReturnVisual.CLEAR || contract.records(stable()).isNotEmpty()) throw VisitMismatch("空列表画面尚未稳定，请查看后继续")
                 VisitEffect(message = "待办已处理完", emptyList = true)
             } else {
                 selected = records.first()
@@ -166,10 +177,14 @@ class AndroidVisitDriver internal constructor(
             if (fence.target != bridge.target) throw VisitMismatch("未确认提交属于其他目标应用")
             if (records.any { it.fingerprint == old }) throw VisitMismatch("原记录仍在列表，提交结果不明确")
             confirmedList = contract.listSignature(tree)
+            confirmedCount = records.size
+            confirmedTop = records.firstOrNull()?.fingerprint
             val confirmation = lastConfirmation ?: throw VisitMismatch("缺少提交后正常页面核验")
             if (!fence.confirmSubmission(confirmation.anchorMs)) throw VisitMismatch("提交确认计时保存失败，保留保护标记")
             if (!fence.clear()) throw VisitMismatch("提交已核对，但保护标记未能清除；保持暂停")
             selected = null
+            diagnostics.record(VisitDebugEvent(VisitDebugKind.RETURN_CONFIRMED, step = step, records = records.size,
+                pending = pendingSubmission, durationMs = (now() - confirmation.anchorMs).coerceAtLeast(0), ok = true))
             VisitEffect(message = "${confirmation.method}，原记录已移除；间隔已从首次有效时刻计算")
         }
         VisitStep.GAP -> VisitEffect()
@@ -178,7 +193,9 @@ class AndroidVisitDriver internal constructor(
         var current = tree
         repeat(3) { attempt ->
             contract.formIdentity(current, selected)
-            when (contract.normalState(current)) {
+            val state = contract.normalState(current)
+            diagnostics.record(VisitDebugEvent(VisitDebugKind.CHOICE_CHECK, choice = state, attempt = attempt + 1))
+            when (state) {
                 ChoiceResult.ABNORMAL -> throw VisitMismatch("户籍状态异常，禁止继续")
                 ChoiceResult.NORMAL -> { checkFormFields(current); return current }
                 ChoiceResult.UNKNOWN -> Unit
@@ -188,11 +205,13 @@ class AndroidVisitDriver internal constructor(
             try {
                 vision.requireNormal(normal, abnormal)
             } catch (e: VisitChoiceUncertain) {
+                diagnostics.record(VisitDebugEvent(VisitDebugKind.CHOICE_CHECK, choice = ChoiceResult.UNKNOWN, attempt = attempt + 1, reason = e.reason))
                 if (attempt == 2) throw e
                 delay(350)
                 current = stable()
                 return@repeat
             }
+            diagnostics.record(VisitDebugEvent(VisitDebugKind.CHOICE_CHECK, choice = ChoiceResult.NORMAL, attempt = attempt + 1, ok = true))
             val observed = observations.read()
             checkFormFields(observed)
             // Ignore unrelated WebView changes, but never reuse a visual result
@@ -250,7 +269,9 @@ class AndroidVisitDriver internal constructor(
         while (true) {
             val started = now()
             returnChecks++
-            val tree = try { bridge.capture() } catch (_: VisitReadPending) {
+            val tree = try { bridge.capture() } catch (e: VisitReadPending) {
+                diagnostics.record(VisitDebugEvent(VisitDebugKind.RETURN_CHECK, step = VisitStep.WAIT_LIST,
+                    attempt = returnChecks, pending = true, durationMs = now() - started, ok = false, reason = e.reason))
                 observer.observe(now(), false, false, null, false)
                 delay((1_000 - (now() - started)).coerceAtLeast(80)); continue
             }
@@ -259,13 +280,20 @@ class AndroidVisitDriver internal constructor(
             var signature: String? = null
             var normal = false
             var observedAt = now()
+            var recordCount: Int? = null
+            var oldPresent: Boolean? = null
+            var visual: ReturnVisual? = null
+            var reason: String? = null
             if (!loading && tree.has("待办") && !tree.has("新增")) {
-                val records = try { contract.records(tree) } catch (_: VisitMismatch) { null }
+                val records = try { contract.records(tree) } catch (e: VisitMismatch) { reason = e.reason; null }
                 if (records != null) {
-                    val frame = try { returnVision.inspect(tree) } catch (_: VisitReadPending) { ReturnFrame(ReturnVisual.UNKNOWN, now()) }
+                    recordCount = records.size
+                    oldPresent = records.any { it.fingerprint == old }
+                    val frame = try { returnVision.inspect(tree) } catch (e: VisitReadPending) { reason = e.reason; ReturnFrame(ReturnVisual.UNKNOWN, now()) }
+                    visual = frame.state
                     observedAt = frame.capturedAt
                     loading = frame.state == ReturnVisual.BLOCKED
-                    normal = frame.state == ReturnVisual.CLEAR && records.none { it.fingerprint == old }
+                    normal = frame.state == ReturnVisual.CLEAR && !oldPresent
                     if (normal) signature = contract.listSignature(tree)
                 }
             } else if (!loading && tree.has("新增")) {
@@ -279,6 +307,9 @@ class AndroidVisitDriver internal constructor(
                 normal = false
             }
             val hint = successHint(fence.pendingClickMs, now()) || tree.nodes.any { it.visible && isVisitSuccess(it.text) }
+            diagnostics.record(VisitDebugEvent(VisitDebugKind.RETURN_CHECK, step = VisitStep.WAIT_LIST, attempt = returnChecks,
+                pending = true, durationMs = now() - started, records = recordCount, oldPresent = oldPresent,
+                visual = visual, loading = loading, normal = normal, successHint = hint, reason = reason))
             val confirmed = observer.observe(observedAt, normal, loading, signature, hint)
             if (confirmed != null) {
                 lastConfirmation = confirmed.copy(anchorMs = fence.pendingAnchorMs ?: confirmed.anchorMs)
@@ -336,5 +367,5 @@ class AndroidVisitDriver internal constructor(
         if (top.fingerprint.isEmpty()) throw VisitMismatch("记录核对失败")
         return "列表、顶部记录和走访按钮可读；未点击"
     }
-    override fun release() { selected = null; confirmedList = null; scrolls = 0; opening = false }
+    override fun release() { selected = null; confirmedList = null; confirmedCount = null; confirmedTop = null; scrolls = 0; opening = false }
 }
