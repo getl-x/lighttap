@@ -22,6 +22,8 @@ interface VisitUiAccess {
     val target: String
     val lastClickDispatchMs: Long? get() = null
     suspend fun capture(): UiTree
+    /** Read-only preparation, before the runner writes its submission fence. */
+    suspend fun prepareSubmit(tree: UiTree, node: UiNode) = Unit
     suspend fun perform(tree: UiTree, node: UiNode, action: Int, value: String? = null)
     /** Navigation is distinct from submission: it may use the node's own click
      * action without changing the single gesture used to submit. */

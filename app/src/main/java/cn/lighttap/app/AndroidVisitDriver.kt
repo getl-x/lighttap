@@ -5,6 +5,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.view.accessibility.AccessibilityNodeInfo
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 
 interface VisitSubmissionFence {
     val hash: String?
@@ -177,6 +178,10 @@ class AndroidVisitDriver internal constructor(
             if (pendingSubmission) throw VisitMismatch("已有未确认提交，禁止再次提交")
             val button = contract.submit(tree)
             val record = selected ?: throw VisitMismatch("缺少记录核验信息")
+            // Image recognition may fail without dispatching anything. Finish
+            // that read-only work before marking an attempted submission.
+            bridge.prepareSubmit(tree, button)
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
             // Persist a non-reversible record digest before dispatch. Survives stop/process death.
             if (!fence.mark(record.fingerprint, bridge.target)) throw VisitMismatch("无法保存提交保护标记，禁止提交")
             lastConfirmation = null; returnObservation = null; returnChecks = 0

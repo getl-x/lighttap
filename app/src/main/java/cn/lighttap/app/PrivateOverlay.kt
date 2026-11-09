@@ -35,8 +35,8 @@ class PrivateOverlay(private val service: ClickAccessibilityService, private val
         if (renderedMode != mode || renderedCompact != compact) clear()
         if (view == null) build(mode, compact)
         val wait = if (state.step == VisitStep.SUBMIT && state.remainingWaitMs > 0 && state.active) "距允许提交 ${countdown(state.remainingWaitMs)}\n" else ""
-        status?.text = if (compact) "${state.rounds} 轮 · ${state.step.title}\n$wait${state.message}"
-            else "逐步测试 · ${state.rounds} 轮\n$wait${state.message}\n已执行：${state.lastStep}\n结果：${state.result}\n下一步：${state.step.title}\n预期：${state.step.expected}"
+        status?.text = if (compact) "${controller.recognitionTitle} · ${state.rounds} 轮 · ${state.step.title}\n$wait${state.message}"
+            else "${controller.recognitionTitle} · 逐步测试 · ${state.rounds} 轮\n$wait${state.message}\n已执行：${state.lastStep}\n结果：${state.result}\n下一步：${state.step.title}\n预期：${state.step.expected}"
         status?.setTextColor(when (state.status) {
             VisitStatus.ERROR -> LightTapColors.OVERLAY_ERROR
             VisitStatus.WAITING, VisitStatus.PAUSED, VisitStatus.CHECKPOINT -> LightTapColors.OVERLAY_WARNING

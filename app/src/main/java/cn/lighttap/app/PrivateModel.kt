@@ -38,10 +38,11 @@ class PrivateModel(private val context: Context) {
         mode = runCatching { VisitRunMode.valueOf(preferences.getString("mode", "ONCE")!!) }.getOrDefault(VisitRunMode.ONCE),
         countText = preferences.getString("count", "1") ?: "1",
         waitText = restoredWait(),
+        recognition = runCatching { VisitRecognition.valueOf(preferences.getString("recognition", "CONTROLS")!!) }.getOrDefault(VisitRecognition.CONTROLS),
     ))
     val state = MutableStateFlow(VisitState())
     val probeResult = MutableStateFlow("尚未进行只读检查")
-    val verified = MutableStateFlow(preferences.getBoolean("test_confirmed", false))
+    val verified = MutableStateFlow(preferences.getBoolean(settings.value.recognition.confirmationKey, false))
     val storageError = MutableStateFlow<String?>(if (waitMigrationFailed) "等待设置保存失败，请重新保存后开始" else null)
     val saving = MutableStateFlow(false)
     val history = MutableStateFlow<List<VisitHistoryEntry>>(emptyList())
@@ -56,7 +57,8 @@ class PrivateModel(private val context: Context) {
         settingsScope.launch {
             for (updated in settingsQueue) {
                 val saved = withContext(Dispatchers.IO) {
-                    preferences.edit().putString("mode", updated.mode.name).putString("count", updated.countText).putString("wait", updated.waitText).commit()
+                    preferences.edit().putString("mode", updated.mode.name).putString("count", updated.countText).putString("wait", updated.waitText)
+                        .putString("recognition", updated.recognition.name).commit()
                 }
                 if (updated == settings.value) {
                     storageError.value = if (saved) null else "设置保存失败，请检查存储空间；禁止开始"
@@ -81,6 +83,7 @@ class PrivateModel(private val context: Context) {
             .put("fontScale", context.resources.configuration.fontScale.toDouble())
             .put("displayDensityDpi", context.resources.displayMetrics.densityDpi)
             .put("targetVersion", targetInfo?.versionName ?: JSONObject.NULL)
+            .put("recognitionMode", settings.value.recognition.name)
             .put("serviceConnected", controller != null).put("status", current.status.name).put("step", current.step.name)
             .put("execution", current.execution.name).put("rounds", current.rounds).put("pendingSubmission", current.pendingSubmission)
             .put("reason", safeVisitDebugReason(current.message)).put("intervalMs", settings.value.waitText.toLongOrNull()?.times(1_000) ?: JSONObject.NULL)
@@ -113,9 +116,10 @@ class PrivateModel(private val context: Context) {
     var controller: PrivateController? = null
         private set
     fun edit(change: (VisitSettings) -> VisitSettings) {
-        if (state.value.active) return
+        if (state.value.active || controller?.probing == true) return
         val updated = change(settings.value)
         settings.value = updated
+        verified.value = preferences.getBoolean(updated.recognition.confirmationKey, false)
         saving.value = true
         settingsQueue.trySend(updated)
     }
@@ -126,7 +130,7 @@ class PrivateModel(private val context: Context) {
     fun disconnect() { controller?.disconnect(); controller = null }
     fun clearTask() { controller?.stopAndHide(); session.lock() }
     fun confirmTest() {
-        val saved = preferences.edit().putBoolean("test_confirmed", true).commit()
+        val saved = preferences.edit().putBoolean(settings.value.recognition.confirmationKey, true).commit()
         verified.value = saved
         if (!saved) storageError.value = "测试确认未能保存"
     }
@@ -148,8 +152,10 @@ class PrivateController(private val service: ClickAccessibilityService, private 
             covered
         }
     }, restore = { withContext(Dispatchers.Main.immediate) { overlay.suppress(false); workReminder.suppress(false) } })
-    private val bridge = DiagnosedVisitUiAccess(SurfaceVisitUiAccess(AndroidUiBridge(service, PrivateModel.TARGET) { overlay.bounds() }, surface),
-        model.debugLog, { SystemClock.elapsedRealtime() })
+    private val nativeBridge = AndroidUiBridge(service, PrivateModel.TARGET) { overlay.bounds() }
+    private val imageBridge = AndroidImageVisitUiAccess(service, nativeBridge, surface, model.debugLog)
+    private val bridge = DiagnosedVisitUiAccess(SelectedVisitUiAccess({ model.settings.value.recognition },
+        SurfaceVisitUiAccess(nativeBridge, surface), imageBridge), model.debugLog, { SystemClock.elapsedRealtime() })
     private val driver: AndroidVisitDriver = AndroidVisitDriver(service, bridge, AndroidChoiceVision(service, surface), model.debugLog,
         surface, { if (shown) overlay.prepare(runner.state.value, mode) })
     private val runner: VisitRunner = VisitRunner(scope, driver, { SystemClock.elapsedRealtime() }, { notifyPause() }, { model.confirmTest() },
@@ -161,7 +167,15 @@ class PrivateController(private val service: ClickAccessibilityService, private 
         model.probeResult.value = message
         model.debugLog.record(VisitDebugEvent(VisitDebugKind.PROBE, reason = message))
         if (shown) overlay.render(runner.state.value.copy(message = message), mode)
-    }, { service.notice(it) }, { driver.probe() })
+    }, { service.notice(it) }, timeoutMs = { if (model.settings.value.recognition == VisitRecognition.IMAGE) 20_000L else 5_000L }, read = {
+        val result = driver.probe()
+        if (model.settings.value.recognition == VisitRecognition.IMAGE) {
+            imageBridge.probe()
+            "本机识字与按钮定位可用；未填写、未点击、未提交"
+        } else result
+    })
+    val probing get() = probeCheck.active
+    val recognitionTitle get() = if (model.settings.value.recognition == VisitRecognition.IMAGE) "图像备用" else "控件识别"
     init {
         scope.launchVisitRunReminder(runner.state, remind = { vibration.remind() }, cancelReminder = { vibration.cancelRunReminder() })
         scope.launch { runner.state.collect {
@@ -189,6 +203,7 @@ class PrivateController(private val service: ClickAccessibilityService, private 
     }
     fun arm(execution: VisitExecution) {
         if (!authorized()) return
+        if (probeCheck.active) { service.notice("只读检查进行中，请稍后开始"); return }
         if (runner.state.value.active) { service.notice("请先停止当前任务"); return }
         if (service.appModel.runtime.value.status in setOf(RunStatus.RUNNING, RunStatus.PAUSED)) { service.notice("请先停止普通连点任务"); return }
         if (execution == VisitExecution.FORMAL && !model.verified.value) { service.notice("请先完成一次逐步测试并确认结果"); return }
@@ -198,7 +213,7 @@ class PrivateController(private val service: ClickAccessibilityService, private 
         if (error != null) { service.notice(error); return }
         if (!runCatching { service.packageManager.getApplicationInfo(PrivateModel.TARGET, 0) }.isSuccess) { service.notice("未发现已绑定的目标应用"); return }
         mode = execution; service.hideOverlay(); shown = true
-        model.debugLog.record(VisitDebugEvent(VisitDebugKind.ARM, execution = mode, pending = driver.pendingSubmission))
+        model.debugLog.record(VisitDebugEvent(VisitDebugKind.ARM, execution = mode, pending = driver.pendingSubmission, recognition = model.settings.value.recognition))
         overlay.render(runner.state.value, mode)
         service.notice("请切换到目标待办页，再通过控制条开始或只读检查")
     }
@@ -239,7 +254,11 @@ class PrivateController(private val service: ClickAccessibilityService, private 
             if (!inputMethod) pause("前台应用变化，已暂停，请查看", error = true)
         }
     }
-    fun disconnect() { stopAndHide(); workReminder.detach(); scope.cancel() }
+    fun disconnect() {
+        stopAndHide(); workReminder.detach()
+        scope.launch(NonCancellable + Dispatchers.IO) { imageBridge.close() }
+        scope.cancel()
+    }
     private fun notifyPause() {
         val manager = service.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel("operation_status", "任务状态", NotificationManager.IMPORTANCE_DEFAULT))

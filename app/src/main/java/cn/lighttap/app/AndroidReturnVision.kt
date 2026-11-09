@@ -31,7 +31,7 @@ class AndroidReturnVision(private val service: AccessibilityService, private val
                     try {
                         if (!continuation.isActive) return
                         hardware = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace) ?: error("No screenshot")
-                        software = hardware!!.copy(Bitmap.Config.ARGB_8888, false) ?: error("No readable screenshot")
+                        software = screenshotSrgb(hardware!!)
                         val tabBottom = tree.exact("待办", true).singleOrNull()?.bounds?.bottom ?: error("Missing tab")
                         val left = (software!!.width * .04).toInt()
                         val top = maxOf(tabBottom + 8, (software!!.height * .26).toInt())

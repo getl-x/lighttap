@@ -11,6 +11,7 @@ class DiagnosedVisitUiAccess(
 ) : VisitUiAccess {
     override val target get() = delegate.target
     override val lastClickDispatchMs get() = delegate.lastClickDispatchMs
+    override suspend fun prepareSubmit(tree: UiTree, node: UiNode) = delegate.prepareSubmit(tree, node)
     override suspend fun capture(): UiTree {
         val start = now()
         try {

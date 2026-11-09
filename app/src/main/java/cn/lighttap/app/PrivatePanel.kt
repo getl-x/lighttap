@@ -54,7 +54,8 @@ fun PrivatePanel(model: AppModel) {
     val targetInstalled = remember(revision) { runCatching { context.packageManager.getApplicationInfo(PrivateModel.TARGET, 0) }.isSuccess }
     val notificationsAllowed = remember(revision) { context.getSystemService(NotificationManager::class.java).areNotificationsEnabled() }
     val supported = Build.VERSION.SDK_INT >= 30
-    val canArm = service != null && targetInstalled && screen != null && supported && !state.active && !saving && settings.error() == null && storageError == null
+    val probing = probe == "正在只读检查，未执行操作"
+    val canArm = service != null && targetInstalled && screen != null && supported && !state.active && !probing && !saving && settings.error() == null && storageError == null
     var details by rememberSaveable { mutableStateOf(false) }
     var showHistory by rememberSaveable { mutableStateOf(false) }
     val statusColor = when (state.status) {
@@ -78,19 +79,31 @@ fun PrivatePanel(model: AppModel) {
                 } else {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = { local.controller?.arm(VisitExecution.STEP_TEST) }, enabled = canArm, modifier = Modifier.weight(1f)) { Text("逐步测试") }
-                        Button(onClick = { local.controller?.arm(VisitExecution.FORMAL) }, enabled = canArm && verified, modifier = Modifier.weight(1f)) { Text("正式运行") }
+                        Button(onClick = { local.controller?.arm(VisitExecution.FORMAL) }, enabled = canArm && verified, modifier = Modifier.weight(1f)) { Text(if (settings.recognition == VisitRecognition.IMAGE) "图像备用运行" else "正式运行") }
                     }
                     Text("选择模式后，切到目标待办页，再通过控制条开始。测试每步暂停，提交前需人工放行。", style = MaterialTheme.typography.bodySmall)
                 }
                 storageError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 if (saving) Text("正在保存设置…", style = MaterialTheme.typography.bodySmall)
             }
+            ToolCard("识别方式") {
+                VisitRecognition.entries.forEach { recognition ->
+                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).selectable(selected = settings.recognition == recognition,
+                        enabled = !state.active && !probing && !saving, role = Role.RadioButton,
+                        onClick = { local.edit { it.copy(recognition = recognition) } }), verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = settings.recognition == recognition, enabled = !state.active && !probing && !saving, onClick = null)
+                        Text(recognition.title, Modifier.padding(start = 8.dp))
+                    }
+                }
+                Text("图像备用通过本机截图识字定位按钮；文字输入和记录核对使用系统接口。模型已内置，不联网，截图仅在内存处理。", style = MaterialTheme.typography.bodySmall)
+                Text("两种方式分别完成逐步测试后才能正式运行。切换前先停止当前任务；不会因一次失败自动换方式或重复提交。", style = MaterialTheme.typography.bodySmall)
+            }
             ToolCard("开始前检查") {
                 ReadinessRow("点击服务", service != null)
                 ReadinessRow("目标应用已安装", targetInstalled)
                 ReadinessRow("屏幕参数可读", screen != null)
                 ReadinessRow("画面核验能力 · Android 11 及以上", supported)
-                Text(if (verified) "逐步测试已确认，可使用正式模式" else "尚未确认逐步测试，正式模式暂不可用", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(if (verified) "当前识别方式的逐步测试已确认，可正式运行" else "当前识别方式尚未确认逐步测试，正式运行暂不可用", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("每一步按当前页面重新识别，兼容常规布局和控件层级变化；字段含义或流程改变、无法唯一核验时暂停。", style = MaterialTheme.typography.bodySmall)
                 if (service == null) OutlinedButton(onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("开启点击服务") }
             }

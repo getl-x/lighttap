@@ -57,6 +57,12 @@ class AndroidVisitDriverTest {
         var navigationClicks = 0
         var rejectedNavigationClicks = 0
         var blockedNavigationClicks = 0
+        var preparationFailure = false
+        var prepared = 0
+        override suspend fun prepareSubmit(tree: UiTree, node: UiNode) {
+            prepared++
+            if (preparationFailure) throw VisitPreActionMismatch("图像按钮识别不唯一或置信度不足，已暂停")
+        }
         override suspend fun openVisit(tree: UiTree, node: UiNode) {
             navigationClicks++
             if (blockedNavigationClicks > 0) { blockedNavigationClicks--; throw VisitPreActionMismatch("悬浮内容遮挡目标控件，请移开或收起后继续") }
@@ -83,6 +89,49 @@ class AndroidVisitDriverTest {
     private fun TestScope.runner(driver: VisitDriver) = VisitRunner(backgroundScope, driver, { testScheduler.currentTime })
     private fun TestScope.returnVision() = VisitReturnVision { ReturnFrame(ReturnVisual.CLEAR, testScheduler.currentTime) }
     private val plan = VisitSettings(targetPackage = "fixture")
+
+    @Test fun imagePreparationFailureDoesNotMarkOrSubmitAndCanBeRetried() = runTest {
+        val ui = Ui { testScheduler.currentTime }.apply { preparationFailure = true }
+        val fence = Fence { testScheduler.currentTime }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, fence, returnVision(), { testScheduler.currentTime })
+        val runner = runner(driver)
+        runner.start(plan.copy(recognition = VisitRecognition.IMAGE), VisitExecution.FORMAL)
+        advanceTimeBy(2_000); runCurrent()
+        assertEquals(VisitStatus.ERROR, runner.state.value.status)
+        assertEquals(VisitStep.SUBMIT, runner.state.value.step)
+        assertFalse(driver.pendingSubmission)
+        assertEquals(0, ui.actions.count { it == "提交" })
+        ui.preparationFailure = false
+        runner.resume(); advanceTimeBy(2_000); runCurrent()
+        assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
+        assertEquals(1, ui.actions.count { it == "提交" })
+        assertEquals(2, ui.prepared)
+    }
+    @Test fun switchingToImageAfterUnconfirmedSubmissionOnlyChecksResult() = runTest {
+        val ui = Ui { testScheduler.currentTime }.apply { failAfterSubmit = true }
+        val fence = Fence { testScheduler.currentTime }
+        var recognition = VisitRecognition.CONTROLS
+        var imageClicks = 0
+        val images = object : VisitUiAccess by ui {
+            override suspend fun openVisit(tree: UiTree, node: UiNode) { imageClicks++; ui.openVisit(tree, node) }
+            override suspend fun perform(tree: UiTree, node: UiNode, action: Int, value: String?) {
+                if (action == AccessibilityNodeInfo.ACTION_CLICK) imageClicks++
+                ui.perform(tree, node, action, value)
+            }
+        }
+        val bridge = SelectedVisitUiAccess({ recognition }, ui, images)
+        val driver = AndroidVisitDriver(bridge, VisitChoiceVerifier { _, _ -> }, fence, returnVision(), { testScheduler.currentTime })
+        val runner = runner(driver)
+        runner.start(plan, VisitExecution.FORMAL); advanceTimeBy(2000); runCurrent()
+        assertTrue(driver.pendingSubmission)
+        assertEquals(1, ui.actions.count { it == "提交" })
+        runner.stop(); recognition = VisitRecognition.IMAGE
+        runner.start(plan.copy(recognition = recognition), VisitExecution.FORMAL); advanceTimeBy(2000); runCurrent()
+        assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
+        assertEquals(1, ui.actions.count { it == "提交" })
+        assertEquals(0, imageClicks)
+        assertFalse(driver.pendingSubmission)
+    }
 
     @Test fun ignoredOpenClickDoesNotCountAndContinueActuallyRetriesNavigation() = runTest {
         val ui = Ui { testScheduler.currentTime }.apply { ignoredNavigationClicks = 1 }

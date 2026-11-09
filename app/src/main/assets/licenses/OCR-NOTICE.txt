@@ -1,0 +1,33 @@
+Bundled local OCR components
+
+PaddleOCR Android SDK
+Copyright (c) 2026 PaddlePaddle Authors. Licensed under Apache-2.0.
+Source: https://github.com/PaddlePaddle/PaddleOCR/tree/dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf/deploy/ppocr-android/ppocr-sdk
+Vendored Kotlin sources retain their original copyright/license headers.
+LightTap modification: explicitly disable ONNX Runtime telemetry.
+Full license: PaddleOCR-LICENSE.txt (in this directory).
+
+PP-OCRv5_mobile detection and Chinese recognition ONNX models
+Publisher: PaddlePaddle. Model repository licenses: Apache-2.0.
+https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx
+https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_rec_onnx
+Official Android deployment instructions:
+https://github.com/PaddlePaddle/PaddleOCR/blob/dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf/docs/version3.x/inference_deployment/cross_platform/android_deployment.en.md
+
+models/det/inference.onnx (4,826,518 bytes)
+SHA256 a431985659dc921974177a95adcfbb90fd9e51989a5e04d70d0b75f597b6e61d
+models/rec/inference.onnx (16,534,782 bytes)
+SHA256 da72dc72ca4dc220df0dfde68c1dedc31c58d3e76a25871122e5056227d50092
+models/rec/inference.yml (148,345 bytes)
+SHA256 5dfeb2777f6d0db8177d8128a8acfcf6e6276dc4ac73ea3bf0dc06d6a5e85d8e
+ONNX model hashes were compared with the publisher's model repository LFS hashes.
+These packaged assets are not downloaded by the application.
+
+ONNX Runtime Android 1.31.1
+Copyright (c) Microsoft Corporation. Licensed under MIT.
+https://github.com/microsoft/onnxruntime/tree/v1.31.1
+https://repo.maven.apache.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/1.31.1/
+Full license: ONNXRuntime-LICENSE.txt (in this directory).
+Upstream runtime third-party notices: ONNXRuntime-ThirdPartyNotices.txt.
+
+OpenCV 4.13.0 is reused. See OpenCV-LICENSE.txt in this directory.

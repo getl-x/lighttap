@@ -37,7 +37,7 @@ class DeviceUiRegressionTest {
         inst.waitForIdleSync(); SystemClock.sleep(500)
         val bitmap = automation.takeScreenshot() ?: error("No screenshot")
         try {
-            val folder = File(context.getExternalFilesDir(null), "verification-1.2.6").apply { mkdirs() }
+            val folder = File(context.getExternalFilesDir(null), "verification-${BuildConfig.VERSION_NAME}").apply { mkdirs() }
             File(folder, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         } finally { bitmap.recycle() }
     }
@@ -88,14 +88,7 @@ class DeviceUiRegressionTest {
         automation
         waitFor("Config loads") { model.loaded.value }
         if (model.service.value == null) {
-            val enabled = shell("settings get secure enabled_accessibility_services")
-            require(enabled.matches(Regex("[A-Za-z0-9_.$/:]+")))
-            require(enabled.split(':').any { it.startsWith("cn.lighttap.app/") })
-            val others = enabled.split(':').filterNot { it.startsWith("cn.lighttap.app/") }.joinToString(":")
-            try {
-                shell(if (others.isEmpty()) "settings delete secure enabled_accessibility_services" else "settings put secure enabled_accessibility_services $others")
-                SystemClock.sleep(250)
-            } finally { shell("settings put secure enabled_accessibility_services $enabled") }
+            reconnectDeviceClickService(inst)
         }
         waitFor("Service reconnects") { model.service.value != null }
         val original = model.config.value
@@ -106,7 +99,12 @@ class DeviceUiRegressionTest {
         var activity: Activity? = null
         var privateOverlay: PrivateOverlay? = null
         try {
-            activity = inst.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            shell("am start -W -f 0x30000000 -n cn.lighttap.app/.MainActivity")
+            waitFor("Main page resumes") {
+                main { activity = androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance()
+                    .getActivitiesInStage(androidx.test.runner.lifecycle.Stage.RESUMED).firstOrNull { it is MainActivity } }
+                activity != null
+            }
             main {
                 model.service.value!!.stopRun()
                 assertTrue(model.edit { ClickConfig(mode = ClickMode.SEQUENCE, points = listOf(
@@ -146,7 +144,8 @@ class DeviceUiRegressionTest {
             snapshot("formal-overlay-synthetic")
             main {
                 val field = PrivateOverlay::class.java.getDeclaredField("view").apply { isAccessible = true }
-                val layout = field.get(privateOverlay) as LinearLayout
+                val window = field.get(privateOverlay) as android.widget.ScrollView
+                val layout = window.getChildAt(0) as LinearLayout
                 val row = layout.getChildAt(2) as LinearLayout
                 val button = row.getChildAt(0) as Button
                 val density = context.resources.displayMetrics.density

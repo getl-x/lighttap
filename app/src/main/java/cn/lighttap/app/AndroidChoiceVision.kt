@@ -49,7 +49,7 @@ class AndroidChoiceVision(private val service: AccessibilityService, private val
                         val right = maxOf(normal.right, abnormal.right)+2; val bottom = maxOf(normal.bottom, abnormal.bottom)+2
                         if (left < 0 || top < 0 || right > image.width || bottom > image.height) throw IllegalStateException()
                         crop = Bitmap.createBitmap(image, left, top, right-left, bottom-top)
-                        software = crop!!.copy(Bitmap.Config.ARGB_8888, false) ?: throw IllegalStateException()
+                        software = screenshotSrgb(crop!!)
                         val pixels = IntArray((right-left)*(bottom-top))
                         software!!.getPixels(pixels, 0, right-left, 0, 0, right-left, bottom-top)
                         if (continuation.isActive) continuation.resume(ChoiceFrame(left, top, right-left, bottom-top, pixels)) else pixels.fill(0)

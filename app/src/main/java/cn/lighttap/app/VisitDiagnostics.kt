@@ -9,7 +9,7 @@ fun interface VisitDiagnostics {
 
 enum class VisitDebugKind {
     ARM, START, RESUME, PAUSE, STOP, STEP_START, STEP_DONE, WAIT, ERROR, COMPLETE, PROBE,
-    CAPTURE, STABILITY, OVERLAY_AVOID, ACTION, NAVIGATION_CHECK, LIST, RETURN_CHECK, RETURN_CONFIRMED, CHOICE_CHECK,
+    CAPTURE, STABILITY, OVERLAY_AVOID, ACTION, NAVIGATION_CHECK, LIST, RETURN_CHECK, RETURN_CONFIRMED, CHOICE_CHECK, IMAGE_CHECK,
 }
 enum class VisitDebugAction { CLICK, FILL, SCROLL, OTHER }
 
@@ -49,6 +49,7 @@ data class VisitDebugEvent(
     val ok: Boolean? = null,
     val reason: String? = null,
     val delta: VisitSnapshotDelta? = null,
+    val recognition: VisitRecognition? = null,
 ) {
     internal fun json(): JSONObject = JSONObject().apply {
         put("kind", kind.name)
@@ -67,6 +68,7 @@ data class VisitDebugEvent(
         attempt?.let { put("attempt", it) }; action?.let { put("action", it.name) }
         submit?.let { put("submit", it) }; ok?.let { put("ok", it) }
         navigation?.let { put("navigation", it) }
+        recognition?.let { put("recognitionMode", it.name) }
         reason?.let { put("reason", safeVisitDebugReason(it)) }
         delta?.let { put("delta", JSONObject().put("added", it.added).put("removed", it.removed)
             .put("text", it.text).put("description", it.description).put("geometry", it.geometry)
@@ -86,6 +88,12 @@ internal fun safeVisitDebugReason(reason: String): String = when {
 }
 
 private val DEBUG_REASONS = setOf(
+    "图像目标控件不完整可见，已暂停", "图像按钮识别不唯一或置信度不足，已暂停", "图像采样已过期，请重新识别",
+    "图像定位与当前按钮不一致，已暂停", "图像页面状态无法确认，已暂停", "图像识别期间目标窗口变化，已暂停",
+    "图像识别期间页面结构变化，已暂停",
+    "图像识别期间按钮移动，已暂停", "图像识别服务已关闭，请重新开启", "本地识字库与此设备不兼容，已暂停",
+    "本地识字模型加载失败，已暂停", "本机图像识字失败，已暂停", "图像备用方式需要 Android 11 及以上",
+    "当前画面无法用于图像识别，已暂停", "图像提交准备已失效，请重新核验", "本机识字与按钮定位可用；未填写、未点击、未提交",
     "用户暂停", "已返回设置页，请查看后手动继续", "前台应用变化，已暂停，请查看",
     "屏幕已关闭，任务已停止", "屏幕参数已变化，请检查并重新确认点位", "无障碍服务被中断，任务已停止",
     "当前界面不可读取", "当前窗口快照已失效", "当前前台不是已绑定的目标应用", "界面结构正在变化",

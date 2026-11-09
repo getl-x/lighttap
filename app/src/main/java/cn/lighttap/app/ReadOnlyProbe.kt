@@ -7,6 +7,7 @@ internal class ReadOnlyProbe(
     private val scope: CoroutineScope,
     private val publish: (String) -> Unit,
     private val finished: (String) -> Unit,
+    private val timeoutMs: () -> Long = { 5_000L },
     private val read: suspend () -> String,
 ) {
     private var generation = 0L
@@ -20,7 +21,7 @@ internal class ReadOnlyProbe(
         val next = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 val result = try {
-                    withTimeout(5_000) { read() }
+                    withTimeout(timeoutMs()) { read() }
                 } catch (_: TimeoutCancellationException) {
                     "只读检查超时，请待页面稳定后重试；未执行操作"
                 } catch (e: VisitMismatch) {

@@ -2,7 +2,11 @@ package cn.lighttap.app
 
 enum class VisitRunMode { ONCE, COUNT, CONTINUOUS }
 enum class VisitExecution { FORMAL, STEP_TEST }
-data class VisitSettings(val targetPackage: String = "", val mode: VisitRunMode = VisitRunMode.ONCE, val countText: String = "1", val waitText: String = DEFAULT_SUBMISSION_INTERVAL_SECONDS) {
+enum class VisitRecognition(val title: String, val confirmationKey: String) {
+    CONTROLS("控件识别（原方式）", "test_confirmed"), IMAGE("图像识别（备用）", "image_test_confirmed")
+}
+data class VisitSettings(val targetPackage: String = "", val mode: VisitRunMode = VisitRunMode.ONCE, val countText: String = "1", val waitText: String = DEFAULT_SUBMISSION_INTERVAL_SECONDS,
+                         val recognition: VisitRecognition = VisitRecognition.CONTROLS) {
     fun error(): String? = when {
         targetPackage.isBlank() -> "请先绑定目标应用"
         !waitText.matches(Regex("[0-9]{1,5}")) || waitText.toLongOrNull() !in 61L..86_400L -> "提交间隔须为 61～86400 的整数秒"

@@ -30,19 +30,7 @@ class DeviceActionsTest {
     private fun prepare(): Pair<Activity, View> {
         val automation = inst.getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
         if (model.service.value == null) {
-            // Instrumentation restarts the target process. Refresh only the service
-            // that the user already enabled, preserving every other enabled service.
-            fun shell(command: String): String = automation.executeShellCommand(command).use { descriptor -> android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().readText().trim() }
-            val enabled = shell("settings get secure enabled_accessibility_services")
-            require(enabled.matches(Regex("[A-Za-z0-9_.$/:]+")))
-            val entries = enabled.split(':')
-            require(entries.any { it.startsWith("cn.lighttap.app/") }) { "User must enable the service first" }
-            val others = entries.filterNot { it.startsWith("cn.lighttap.app/") }.joinToString(":")
-            try {
-                shell(if (others.isEmpty()) "settings delete secure enabled_accessibility_services" else "settings put secure enabled_accessibility_services $others")
-                SystemClock.sleep(200)
-            } finally { shell("settings put secure enabled_accessibility_services $enabled") }
-            assertEquals(enabled.split(':').toSet(), shell("settings get secure enabled_accessibility_services").split(':').toSet())
+            reconnectDeviceClickService(inst)
         }
         waitUntil("Service must be enabled") { model.service.value != null && model.loaded.value }
         automation.executeShellCommand("am start -n cn.lighttap.app/.MainActivity").use { descriptor -> android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().readText() }
@@ -162,7 +150,7 @@ class DeviceActionsTest {
         try {
             main {
                 model.service.value!!.stopRun()
-                model.edit { ClickConfig(mode = ClickMode.SIMULTANEOUS, points = listOf(ClickPoint(1, pos[0] + canvas.width * .3f, pos[1] + canvas.height * .7f), ClickPoint(2, pos[0] + canvas.width * .7f, pos[1] + canvas.height * .7f)), screen = model.screen.value, stopMode = StopMode.ROUNDS, roundLimit = 2) }
+                model.edit { ClickConfig(mode = ClickMode.SIMULTANEOUS, points = listOf(ClickPoint(1, pos[0] + canvas.width * .3f, pos[1] + canvas.height * .7f), ClickPoint(2, pos[0] + canvas.width * .7f, pos[1] + canvas.height * .7f)), screen = model.screen.value, stopMode = StopMode.ROUNDS, roundLimit = 2, startDelayMs = 500) }
                 model.service.value!!.showOverlay()
             }
             inst.waitForIdleSync(); SystemClock.sleep(200)

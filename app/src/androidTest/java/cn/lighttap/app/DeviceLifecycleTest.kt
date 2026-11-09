@@ -13,12 +13,25 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class DeviceLifecycleTest {
+    private fun startMain(inst: android.app.Instrumentation): Activity {
+        val automation = inst.getUiAutomation(android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
+        automation.executeShellCommand("am start -W -f 0x30000000 -n cn.lighttap.app/.MainActivity").use {
+            android.os.ParcelFileDescriptor.AutoCloseInputStream(it).bufferedReader().readText()
+        }
+        var activity: Activity? = null
+        val deadline = SystemClock.elapsedRealtime() + 10_000
+        while (activity == null && SystemClock.elapsedRealtime() < deadline) {
+            inst.runOnMainSync { activity = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED).firstOrNull { it is MainActivity } }
+            if (activity == null) SystemClock.sleep(30)
+        }
+        return activity ?: error("Main page did not resume")
+    }
     @Test fun privateRouteSurvivesBackgroundAndRecreationButNotNewTask() {
         val inst = InstrumentationRegistry.getInstrumentation()
         inst.getUiAutomation(android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
         val context = inst.targetContext
         val model = context.appModel
-        val activity = inst.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val activity = startMain(inst)
         inst.waitForIdleSync()
         assertFalse(model.privateModel.session.unlocked.value)
         inst.runOnMainSync { model.privateModel.session.unlock() }
@@ -32,12 +45,12 @@ class DeviceLifecycleTest {
         val recreated = resumed ?: throw AssertionError("Activity recreation did not resume")
         inst.runOnMainSync { recreated.moveTaskToBack(true) }
         SystemClock.sleep(300)
-        context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+        startMain(inst)
         inst.waitForIdleSync(); SystemClock.sleep(400)
         assertTrue("Background return must preserve the route", model.privateModel.session.unlocked.value)
         inst.runOnMainSync { resumed = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED).firstOrNull { it is MainActivity }; resumed?.finishAndRemoveTask() }
         SystemClock.sleep(500)
-        val fresh = inst.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val fresh = startMain(inst)
         inst.waitForIdleSync()
         assertFalse("New task must return to normal home", model.privateModel.session.unlocked.value)
         inst.runOnMainSync { fresh.finishAndRemoveTask() }
