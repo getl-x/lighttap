@@ -38,8 +38,8 @@ class VisitObservationTest {
             VisitObservation { if (++reads % 2 == 0) ready else first }.stable()
             fail("Must time out")
         } catch (_: VisitMismatch) { }
-        assertEquals(3_000L, testScheduler.currentTime)
-        assertTrue(reads < 40)
+        assertEquals(VisitObservation.STABLE_TIMEOUT_MS, testScheduler.currentTime)
+        assertTrue(reads < 110)
     }
     @Test fun cancellingObservationDoesNotResumeOrRetry() = runTest {
         var reads = 0
@@ -68,5 +68,51 @@ class VisitObservationTest {
         assertEquals(nodes.dropLast(1), withoutRedundantTextLeaves(nodes))
         assertEquals(3, withoutRedundantTextLeaves(nodes.dropLast(1) + leaf.copy(selected = true)).size)
         assertEquals(3, withoutRedundantTextLeaves(nodes.dropLast(1) + leaf.copy(editable = true)).size)
+    }
+
+    @Test fun reportedReadTimingsAllowChangedTreeThenTwoMatchingSnapshots() = runTest {
+        var reads = 0
+        val events = mutableListOf<VisitDebugEvent>()
+        val observer = VisitObservation({ testScheduler.currentTime }, VisitDiagnostics { events += it }) {
+            when (++reads) {
+                1 -> { delay(321); first }
+                2 -> { delay(1_235); ready }
+                else -> { delay(1_400); ready }
+            }
+        }
+        assertEquals(ready, observer.stable())
+        assertEquals(3, reads)
+        assertEquals(3_116L, testScheduler.currentTime)
+        assertTrue(events.last().ok == true)
+        assertEquals(1, events[1].delta!!.text)
+    }
+
+    @Test fun twoIdenticalSlowReadsDoNotTimeOutBeforeSecondCompletes() = runTest {
+        assertEquals(ready, VisitObservation { delay(1_500); ready }.stable())
+        assertEquals(3_080L, testScheduler.currentTime)
+    }
+
+    @Test fun longerBudgetNeverRetriesAnActionAndCancellationIsImmediate() = runTest {
+        var reads = 0
+        val events = mutableListOf<VisitDebugEvent>()
+        val observer = VisitObservation({ testScheduler.currentTime }, VisitDiagnostics { events += it }) {
+            reads++; delay(1_500); ready
+        }
+        val job = launch { observer.stable() }
+        runCurrent(); advanceTimeBy(2_000); job.cancelAndJoin()
+        assertTrue(job.isCancelled)
+        assertEquals(2, reads)
+        assertFalse(events.any { it.ok == true })
+    }
+
+    @Test fun snapshotChangeDiagnosticsContainOnlyCounts() {
+        val before = UiTree("fixture", 1, listOf(UiNode("r"), UiNode("r/secret-path", text = "private-person"), UiNode("r/remove")))
+        val after = before.copy(nodes = listOf(UiNode("r"), UiNode("r/secret-path", text = "private-address",
+            description = "private-description", selected = true, bounds = UiBox(1, 1, 5, 5)), UiNode("r/add")))
+        val delta = snapshotDelta(before, after)
+        assertEquals(1, delta.added); assertEquals(1, delta.removed); assertEquals(1, delta.text)
+        assertEquals(1, delta.description); assertEquals(1, delta.controls); assertEquals(1, delta.geometry)
+        val json = VisitDebugEvent(VisitDebugKind.STABILITY, delta = delta).json().toString()
+        assertFalse(json.contains("private-")); assertFalse(json.contains("secret-path"))
     }
 }

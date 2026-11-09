@@ -9,7 +9,7 @@ fun interface VisitDiagnostics {
 
 enum class VisitDebugKind {
     ARM, START, RESUME, PAUSE, STOP, STEP_START, STEP_DONE, WAIT, ERROR, COMPLETE, PROBE,
-    CAPTURE, ACTION, LIST, RETURN_CHECK, RETURN_CONFIRMED, CHOICE_CHECK,
+    CAPTURE, STABILITY, ACTION, LIST, RETURN_CHECK, RETURN_CONFIRMED, CHOICE_CHECK,
 }
 enum class VisitDebugAction { CLICK, FILL, SCROLL, OTHER }
 
@@ -47,6 +47,7 @@ data class VisitDebugEvent(
     val submit: Boolean? = null,
     val ok: Boolean? = null,
     val reason: String? = null,
+    val delta: VisitSnapshotDelta? = null,
 ) {
     internal fun json(): JSONObject = JSONObject().apply {
         put("kind", kind.name)
@@ -65,6 +66,9 @@ data class VisitDebugEvent(
         attempt?.let { put("attempt", it) }; action?.let { put("action", it.name) }
         submit?.let { put("submit", it) }; ok?.let { put("ok", it) }
         reason?.let { put("reason", safeVisitDebugReason(it)) }
+        delta?.let { put("delta", JSONObject().put("added", it.added).put("removed", it.removed)
+            .put("text", it.text).put("description", it.description).put("geometry", it.geometry)
+            .put("controls", it.controls).put("structure", it.structure).put("windowChanged", it.windowChanged)) }
     }
 }
 

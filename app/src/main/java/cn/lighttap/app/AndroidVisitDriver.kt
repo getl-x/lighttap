@@ -71,7 +71,7 @@ class AndroidVisitDriver internal constructor(
         private set
     var returnChecks = 0
         private set
-    private val observations = VisitObservation { bridge.capture() }
+    private val observations = VisitObservation(now, diagnostics) { bridge.capture() }
     override val recoveryStep: VisitStep? get() = when { pendingSubmission -> VisitStep.WAIT_LIST; opening -> VisitStep.WAIT_FORM; else -> null }
     override val pendingSubmission: Boolean get() = fence.hash != null
     override val managesSubmissionTiming = true
