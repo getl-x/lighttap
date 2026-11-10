@@ -143,8 +143,15 @@ class VisitContract(val target: String) {
             val supportedLabels = setOf("姓名", "身份证", "居住地址", "检查地址", "走访描述")
             val overlap = minOf(next.bounds.bottom, marker.bounds.bottom) - maxOf(next.bounds.top, marker.bounds.top)
             val rowHeight = minOf(next.bounds.bottom-next.bounds.top, marker.bounds.bottom-marker.bounds.top)
+            // WebView keeps offscreen label/value text but clips both row
+            // bounds to one viewport edge. Keep verifying those current texts;
+            // zero vertical overlap alone must not lose the record identity.
+            val clippedRow = !marker.visible && !next.visible && !next.clickable && !next.scrollable && !next.selected && !next.checked &&
+                marker.bounds.top == marker.bounds.bottom && next.bounds.top == next.bounds.bottom && marker.bounds.top == next.bounds.top &&
+                marker.bounds.right > marker.bounds.left && next.bounds.right > next.bounds.left &&
+                controlBoundaries.none { isLabel(next.readableText, it) }
             if (next.readableText.isNotBlank() && !next.editable && supportedLabels.none { isLabel(next.readableText, it) } &&
-                overlap > 0 && overlap * 2 >= rowHeight && next.bounds.left >= marker.bounds.right - 8) return next.readableText.trim()
+                ((overlap > 0 && overlap * 2 >= rowHeight) || clippedRow) && next.bounds.left >= marker.bounds.right - 8) return next.readableText.trim()
         }
         for (ancestor in tree.ancestors(marker)) {
             if (ancestor.path != path && !ancestor.path.startsWith("$path/")) break
