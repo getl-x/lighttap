@@ -82,6 +82,8 @@ internal fun safeVisitDebugReason(reason: String): String = when {
     reason in DEBUG_REASONS -> reason
     listOf("检查地址", "走访描述", "姓名", "身份证", "居住地址").any { label ->
         reason == "字段标签缺失或不唯一：$label" || reason == "不能唯一关联输入框：$label"
+            || reason == "记录字段有歧义：$label" || reason == "缺少或无法唯一确定记录核对字段：$label"
+            || reason == "无法确定记录核对字段：$label"
     } -> reason
     Regex("(提交后画面暂不可读取|本机视觉核验不可用，已暂停)（系统码 [0-9]{1,3}）").matches(reason) -> reason
     else -> "未分类原因（原文未记录）"

@@ -27,6 +27,8 @@ data class UiNode(
  * Never interpret an input's hint/description as its entered business value. */
 internal val UiNode.readableText: String get() = if (!editable && text.isBlank()) description else text
 private val controlBoundaries = setOf("待办", "已完成", "正常", "异常", "走访", "走访记录", "提交", "姓名", "身份证", "居住地址", "检查地址", "走访描述")
+private val staticFieldLabels = setOf("姓名", "身份证", "居住地址", "检查地址", "走访描述")
+private val recordProgress = Regex("[0-9]+/[0-9]+")
 private fun undecoratedLabel(text: String) = canonicalLabel(text).trim('*', '＊').removeSuffix("：").removeSuffix(":").trim('*', '＊')
 data class UiTree(val packageName: String, val windowId: Int, val nodes: List<UiNode>) {
     private val byPath by lazy { nodes.associateBy { it.path } }
@@ -124,23 +126,48 @@ class VisitContract(val target: String) {
     }
     fun value(field: UiNode) = if (field.showingHint) "" else field.text
     fun fieldValue(tree: UiTree, label: String) = value(field(tree, label))
+    private fun staticBoundary(text: String): Boolean = controlBoundaries.any { isLabel(text, it) } ||
+        recordProgress.matches(canonicalLabel(text)) || staticFieldLabels.any {
+            canonicalLabel(text).startsWith("$it：") || canonicalLabel(text).startsWith("$it:")
+        }
+    /** One current static value, including optional wrappers/duplicate inline text.
+     * Never take a value from a control or silently pick one of several texts. */
+    private fun staticBlockValue(tree: UiTree, path: String): String? {
+        val nodes = tree.under(path)
+        if (nodes.any { it.editable || it.clickable || it.scrollable || it.selected || it.checked || it.showingHint }) return null
+        val texts = nodes.filter { it.readableText.isNotBlank() }
+        val root = texts.filter { node -> texts.none { other -> node.path.startsWith(other.path + "/") } }.singleOrNull()
+            ?: return null
+        val value = root.readableText.trim()
+        if (texts.any { it.readableText.trim() != value }) return null
+        return value.takeUnless(::staticBoundary)
+    }
     private fun staticValue(tree: UiTree, path: String, label: String): String {
         val nodes = tree.under(path)
         val prefix = Regex("^" + label.map { Regex.escape(it.toString()) }.joinToString("\\s*") + "\\s*[：:]\\s*(.+)$", RegexOption.DOT_MATCHES_ALL)
         val embedded = nodes.filterNot { it.editable }.mapNotNull { prefix.matchEntire(it.readableText.trim())?.groupValues?.get(1)?.trim() }.distinct()
         if (embedded.size == 1) return embedded.single()
-        if (embedded.size > 1) throw VisitMismatch("记录字段有歧义")
+        if (embedded.size > 1) throw VisitMismatch("记录字段有歧义：$label")
         val markers = nodes.filter { !it.editable && isLabel(it.readableText, label) }
         // Match the outer row label, not its optional inline-text child. The
         // adjacent value is a sibling of that outer label in flattened WebViews.
         val marker = markers.filter { node -> markers.none { other -> node.path.startsWith(other.path + "/") } }.singleOrNull()
-            ?: throw VisitMismatch("缺少或无法唯一确定记录核对字段")
+            ?: throw VisitMismatch("缺少或无法唯一确定记录核对字段：$label")
         // Web accessibility often flattens each label/value row into adjacent siblings.
         val siblingValues = nodes.filter { it.path.substringBeforeLast('/', "") == marker.path.substringBeforeLast('/', "") }
         val markerIndex = siblingValues.indexOfFirst { it.path == marker.path }
         if (markerIndex >= 0 && markerIndex + 1 < siblingValues.size) {
             val next = siblingValues[markerIndex + 1]
-            val supportedLabels = setOf("姓名", "身份证", "居住地址", "检查地址", "走访描述")
+            val currentValue = staticBlockValue(tree, next.path)
+            val following = siblingValues.getOrNull(markerIndex + 2)
+            // A flattened field is label -> one static value -> next field or
+            // record progress. This explicit boundary survives CSS column overlap,
+            // multiline text and viewport clipping, without guessing coordinates.
+            val boundedPair = following != null && tree.under(following.path).any { node ->
+                !node.editable && (staticFieldLabels.any { isLabel(node.readableText, it) } ||
+                    recordProgress.matches(canonicalLabel(node.readableText)))
+            }
+            if (currentValue != null && boundedPair) return currentValue
             val overlap = minOf(next.bounds.bottom, marker.bounds.bottom) - maxOf(next.bounds.top, marker.bounds.top)
             val rowHeight = minOf(next.bounds.bottom-next.bounds.top, marker.bounds.bottom-marker.bounds.top)
             // WebView keeps offscreen label/value text but clips both row
@@ -150,16 +177,19 @@ class VisitContract(val target: String) {
                 marker.bounds.top == marker.bounds.bottom && next.bounds.top == next.bounds.bottom && marker.bounds.top == next.bounds.top &&
                 marker.bounds.right > marker.bounds.left && next.bounds.right > next.bounds.left &&
                 controlBoundaries.none { isLabel(next.readableText, it) }
-            if (next.readableText.isNotBlank() && !next.editable && supportedLabels.none { isLabel(next.readableText, it) } &&
-                ((overlap > 0 && overlap * 2 >= rowHeight) || clippedRow) && next.bounds.left >= marker.bounds.right - 8) return next.readableText.trim()
+            if (currentValue != null && ((overlap > 0 && overlap * 2 >= rowHeight) || clippedRow) &&
+                next.bounds.left >= marker.bounds.right - 8) return currentValue
         }
         for (ancestor in tree.ancestors(marker)) {
             if (ancestor.path != path && !ancestor.path.startsWith("$path/")) break
+            val section = tree.under(ancestor.path)
+            if (section.any { it.editable || it.clickable || it.scrollable || it.selected || it.checked ||
+                    (staticBoundary(it.readableText) && !isLabel(it.readableText, label)) }) break
             val leaves = leafTexts(tree, ancestor.path).filter { it.path != marker.path && !isLabel(it.readableText, label) }
             if (leaves.size == 1) return leaves.single().readableText.trim()
             if (leaves.size > 1) break
         }
-        throw VisitMismatch("无法确定记录核对字段")
+        throw VisitMismatch("无法确定记录核对字段：$label")
     }
     fun listSignature(tree: UiTree): String {
         val records = records(tree)

@@ -12,12 +12,12 @@ class ScrolledVisitFormTest {
     private val contract = VisitContract("fixture")
     private val record = VisitRecord("样例甲", "测试地址", "r/card", "r/card/visit")
     private val screen = UiBox(0, 0, 720, 1604)
-    private fun form(scrolled: Boolean = true, edge: Int = 192): UiTree {
+    private fun form(scrolled: Boolean = true, edge: Int = 192, collapsed: Boolean = false): UiTree {
         fun row(path: String, label: String, value: String, top: Int) = listOf(
             UiNode("r/$path-label", text = label, visible = !scrolled,
-                bounds = if (scrolled) UiBox(28, edge, 200, edge) else UiBox(28, top, 200, top + 40)),
+                bounds = if (collapsed && scrolled) UiBox(0, edge, 0, edge) else if (scrolled) UiBox(28, edge, 200, edge) else UiBox(28, top, 200, top + 40)),
             UiNode("r/$path-value", text = value, visible = !scrolled,
-                bounds = if (scrolled) UiBox(198, edge, 690, edge) else UiBox(198, top, 690, top + 40)))
+                bounds = if (collapsed && scrolled) UiBox(0, edge + 1, 0, edge + 1) else if (scrolled) UiBox(198, edge, 690, edge) else UiBox(198, top, 690, top + 40)))
         return UiTree("fixture", 2, listOf(
             UiNode("r", bounds = screen, scrollable = true),
             UiNode("r/title", text = "新增"), UiNode("r/heading", text = "走访记录")) +
@@ -35,8 +35,8 @@ class ScrolledVisitFormTest {
         copy(nodes = nodes.map { if (it.path == path) update(it) else it })
 
     @Test fun clippedIdentityTextIsStillCheckedAtEitherViewportEdge() {
-        for (edge in listOf(0, 192, 1604)) {
-            val tree = form(edge = edge)
+        for (edge in listOf(0, 192, 1604)) for (collapsed in listOf(false, true)) {
+            val tree = form(edge = edge, collapsed = collapsed)
             contract.form(tree, record)
             assertEquals(record.fingerprint, contract.formFingerprint(tree))
             val described = tree.copy(nodes = tree.nodes.map {
@@ -47,7 +47,7 @@ class ScrolledVisitFormTest {
         }
     }
     @Test fun changedHiddenIdentityIsRejectedAndNeverIgnoredByPageComparison() {
-        val tree = form()
+        val tree = form(collapsed = true)
         for (path in listOf("r/name-value", "r/address-value")) {
             val changed = tree.change(path) { it.copy(text = "其他记录") }
             assertThrows(VisitMismatch::class.java) { contract.form(changed, record) }
@@ -67,15 +67,15 @@ class ScrolledVisitFormTest {
             assertThrows(VisitMismatch::class.java) { contract.formIdentity(invalid, record) }
         }
     }
-    @Test fun unrelatedClippedOrVisibleRowsAreNotAssociated() {
+    @Test fun boundedRowsSurviveDifferentClippingAndColumnBounds() {
         val tree = form()
-        for (invalid in listOf(
+        for (changedLayout in listOf(
             tree.change("r/name-value") { it.copy(bounds = UiBox(198, 193, 690, 193)) },
             tree.change("r/name-value") { it.copy(bounds = UiBox(10, 192, 100, 192)) },
             tree.change("r/name-value") { it.copy(visible = true) },
             tree.change("r/name-label") { it.copy(bounds = UiBox(28, 192, 200, 193)) },
             form(false).change("r/name-value") { it.copy(bounds = UiBox(198, 350, 690, 390)) })) {
-            assertThrows(VisitMismatch::class.java) { contract.formIdentity(invalid, record) }
+            contract.formIdentity(changedLayout, record)
         }
     }
 
@@ -96,7 +96,7 @@ class ScrolledVisitFormTest {
         override suspend fun capture() = if (opened) tree else list
         override suspend fun perform(tree: UiTree, node: UiNode, action: Int, value: String?) {
             when (action) {
-                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD -> { scrolls++; this.tree = form() }
+                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD -> { scrolls++; this.tree = form(collapsed = true) }
                 AccessibilityNodeInfo.ACTION_SET_TEXT -> {
                     writes += node.path
                     this.tree = this.tree.change(node.path) { it.copy(text = value!!) }
@@ -141,7 +141,7 @@ class ScrolledVisitFormTest {
     @Test fun imageSubmissionReacquiresClippedIdentityAndRejectsAChangedRecord() = runTest {
         val ui = Ui().apply {
             opened = true
-            tree = form().change("r/description/input") { it.copy(text = VisitContract.DESCRIPTION) }
+            tree = form(collapsed = true).change("r/description/input") { it.copy(text = VisitContract.DESCRIPTION) }
         }
         var taps = 0
         val flow = ImageClickFlow(ui, { _, node, _ -> ImageClickEvidence(node.bounds, testScheduler.currentTime, 720, 1604, false, true) },
