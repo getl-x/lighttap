@@ -69,7 +69,7 @@ class VisitRunner(
                             if (token != generation) return@launch
                             mutable.value = state.value.copy(message = "正在提前核验提交页面", pendingSubmission = driver.pendingSubmission)
                             stepSince = now()
-                            withTimeout(stepBudget.coerceAtLeast(1)) { driver.prepareSubmission() }
+                            withTimeout(stepBudget.coerceAtLeast(1)) { retryUndispatched { driver.prepareSubmission() } }
                             debug(VisitDebugKind.SUBMIT_PREPARED, durationMs = stepSince?.let { now() - it })
                             chargeStep()
                         }
@@ -84,7 +84,7 @@ class VisitRunner(
                     val effect = withTimeout(stepBudget.coerceAtLeast(1)) {
                         driver.validate(step)
                         ensureActive()
-                        try { driver.execute(step) }
+                        try { retryUndispatched { driver.execute(step) } }
                         finally { if (step == VisitStep.SUBMIT && !driver.managesSubmissionTiming) lastSubmissionAt = now() }
                     }
                     debug(VisitDebugKind.STEP_DONE, durationMs = stepSince?.let { now() - it })
@@ -194,6 +194,19 @@ class VisitRunner(
         driver.release()
         notifyCompleted()
     }
+    private suspend fun <T> retryUndispatched(operation: suspend () -> T): T {
+        var rechecks = 0
+        while (true) {
+            try { return operation() } catch (error: VisitPreActionMismatch) {
+                // This type guarantees that nothing was sent. Reacquire the
+                // current page, at most twice, within the existing step budget.
+                if (driver.pendingSubmission || rechecks++ >= 2 || error.reason !in PRE_ACTION_REFRESH) throw error
+                debug(VisitDebugKind.RECHECK, reason = error.reason)
+                driver.invalidatePrepared()
+                delay(150)
+            }
+        }
+    }
     private fun notifyCompleted() { debug(VisitDebugKind.COMPLETE); runCatching { onCompleted() } }
     private fun debug(kind: VisitDebugKind, reason: String? = null, durationMs: Long? = null, waitMs: Long? = null) {
         val state = state.value
@@ -208,3 +221,8 @@ class VisitRunner(
         mutable.value = VisitState(message = if (driver.pendingSubmission) "已停止；存在未确认提交，下次仅核对结果" else "已停止", pendingSubmission = driver.pendingSubmission)
     }
 }
+
+private val PRE_ACTION_REFRESH = setOf("执行前页面发生变化，已暂停", "执行前界面不可读", "目标控件已失效",
+    "执行前控件内容已变化", "执行前控件位置或状态已变化", "图像采样已过期，请重新识别",
+    "图像识别期间页面结构变化，已暂停", "图像识别期间按钮移动，已暂停",
+    "图像识别期间目标窗口变化，已暂停")

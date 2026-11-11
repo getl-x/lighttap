@@ -9,7 +9,7 @@ import org.junit.Test
  * runner together under slow/partial reads, loading and rejected dispatch. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class VisitLongRunRecoveryTest {
-    @Test fun sixtyRoundsSurviveMixedSlowReadsLoadingAndExplicitRecoveryWithoutDuplicates() = runTest {
+    @Test fun sixtyRoundsRecoverFromProvenUndispatchedChangesWithoutManualPausesOrDuplicates() = runTest {
         val count = 60
         val now = { testScheduler.currentTime }
         val screen = UiBox(0, 0, 720, 1600)
@@ -91,17 +91,13 @@ class VisitLongRunRecoveryTest {
         repeat(500) {
             if (runner.state.value.status != VisitStatus.COMPLETED) {
                 advanceTimeBy(10_000); runCurrent()
-                if (runner.state.value.status == VisitStatus.ERROR) {
-                    assertEquals("Only the injected pre-action rejection may pause", "执行前页面发生变化，已暂停", runner.state.value.message)
-                    assertEquals(VisitStep.SUBMIT, runner.state.value.step); assertFalse(driver.pendingSubmission)
-                    recoveries++; runner.resume()
-                }
+                if (runner.state.value.status == VisitStatus.ERROR) { recoveries++; fail(runner.state.value.message) }
             }
         }
         assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
         assertEquals(count.toLong(), runner.state.value.rounds)
         assertEquals((0 until count).toList(), clickedRecords)
-        assertEquals(9, rejected); assertEquals(rejected, recoveries)
+        assertEquals(9, rejected); assertEquals(0, recoveries)
         assertTrue(clicks.zipWithNext().all { (a, b) -> b - a >= 61_000 })
         assertFalse(driver.pendingSubmission)
         runner.stop()

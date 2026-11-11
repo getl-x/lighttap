@@ -109,7 +109,7 @@ class AndroidVisitDriver internal constructor(
     override fun submissionWaitMs(intervalMs: Long) = fence.submissionWaitMs(intervalMs)
     private fun pendingHash() = fence.hash
     override suspend fun begin() { invalidatePrepared(); selected = null; confirmedList = null; confirmedCount = null; confirmedTop = null; scrolls = 0; opening = false; openingAt = null; retryOpening = false; returnObservation = null }
-    private suspend fun stable(initial: UiTree? = null): UiTree = observations.stable(initial)
+    private suspend fun stable(initial: UiTree? = null, validate: (UiTree) -> Unit = {}): UiTree = observations.stable(initial, validate)
     override val submissionPreparationLeadMs get() = (preparationMs + 250).coerceIn(500, 8_000)
     override fun invalidatePrepared() {
         preparedSubmission = null; bridge.discardSubmit()
@@ -166,11 +166,12 @@ class AndroidVisitDriver internal constructor(
         return when (step) {
         VisitStep.FIND_LIST -> {
             retryOpening = false
-            val tree = stable()
-            val records = contract.records(tree)
-            val signature = if (records.isEmpty()) "empty" else records.joinToString("|") { it.fingerprint }
-            diagnostics.record(VisitDebugEvent(VisitDebugKind.LIST, step = step, records = records.size,
-                previousRecords = confirmedCount, listChanged = confirmedList?.let { it != signature },
+            val tree = stable { contract.topRecords(it) }
+            val records = contract.topRecords(tree)
+            // Count visible actions for diagnostics without parsing every bottom
+            // row or comparing a partial selection to an old full-list signature.
+            diagnostics.record(VisitDebugEvent(VisitDebugKind.LIST, step = step, records = tree.exact("走访", true).size,
+                previousRecords = confirmedCount,
                 topUnchanged = confirmedList?.let { confirmedTop == records.firstOrNull()?.fingerprint }, pending = pendingSubmission))
             if (records.isEmpty()) {
                 if (pendingSubmission) throw VisitMismatch("仍有未确认提交，不能以空列表结束")
@@ -186,7 +187,7 @@ class AndroidVisitDriver internal constructor(
             }
         }
         VisitStep.OPEN_FORM -> {
-            val tree = stable()
+            val tree = stable { if (retryOpening && it.has("新增")) contract.formIdentity(it, selected) else contract.top(it) }
             if (retryOpening && tree.has("新增")) {
                 contract.formIdentity(tree, selected ?: throw VisitMismatch("缺少本轮记录，不能操作"))
                 retryOpening = false; opening = true; openingAt = now()
@@ -296,7 +297,13 @@ class AndroidVisitDriver internal constructor(
             diagnostics.record(VisitDebugEvent(VisitDebugKind.CHOICE_CHECK, choice = state, attempt = attempt + 1))
             when (state) {
                 ChoiceResult.ABNORMAL -> throw VisitMismatch("户籍状态异常，禁止继续")
-                ChoiceResult.NORMAL -> { checkFormFields(current); return current }
+                ChoiceResult.NORMAL -> {
+                    try { checkFormFields(current); return current } catch (error: VisitMismatch) {
+                        if (!transientVisitRead(error)) throw error
+                        current = stable(current, ::checkFormFields)
+                        return@repeat
+                    }
+                }
                 ChoiceResult.UNKNOWN -> Unit
             }
             val normal = contract.choiceButton(current, "正常")
@@ -311,8 +318,7 @@ class AndroidVisitDriver internal constructor(
                 return@repeat
             }
             diagnostics.record(VisitDebugEvent(VisitDebugKind.CHOICE_CHECK, choice = ChoiceResult.NORMAL, attempt = attempt + 1, ok = true))
-            val observed = observations.read()
-            checkFormFields(observed)
+            val observed = observations.read(::checkFormFields)
             // Ignore unrelated WebView changes, but never reuse a visual result
             // if the window or either choice control has moved/changed.
             if (observed.windowId == current.windowId && contract.choiceButton(observed, "正常") == normal && contract.choiceButton(observed, "异常") == abnormal) return observed
@@ -321,8 +327,8 @@ class AndroidVisitDriver internal constructor(
         throw VisitMismatch("状态控件持续变化，请查看后继续")
     }
     private suspend fun checkedForm(): UiTree {
-        val tree = stable()
-        contract.formIdentity(tree, selected ?: throw VisitMismatch("缺少本轮记录，不能操作"))
+        if (selected == null) throw VisitMismatch("缺少本轮记录，不能操作")
+        val tree = stable { contract.formIdentity(it, selected); contract.normalState(it) }
         return verifyNormal(tree)
     }
     private fun checkFormFields(tree: UiTree) {
@@ -352,7 +358,7 @@ class AndroidVisitDriver internal constructor(
         var remainingChecks = 12
         var updated: UiTree
         while (true) {
-            val observed = observations.read(); checkForm(observed)
+            val observed = observations.read(::checkForm)
             val actual = contract.fieldValue(observed, label)
             if (actual == value) { updated = observed; break }
             if (actual.isNotEmpty() || --remainingChecks <= 0) throw VisitMismatch("填写后回读不一致，禁止继续")
@@ -431,7 +437,7 @@ class AndroidVisitDriver internal constructor(
                 durationMs = now() - waitStarted, form = tree.has("新增"), loading = contract.loading(tree)))
             if (!contract.loading(tree)) {
                 if (form && tree.has("新增")) {
-                    val ready = stable(tree)
+                    val ready = stable(tree) { contract.formIdentity(it, selected); contract.normalState(it) }
                     // Wait for the state controls as well as the title. Check the
                     // state before normal-only inputs: abnormal can change their layout.
                     if (formPublished(ready)) {
@@ -473,7 +479,7 @@ class AndroidVisitDriver internal constructor(
     } catch (_: VisitMismatch) { false }
     suspend fun probe(): String {
         prepareUi()
-        val tree = stable()
+        val tree = stable { if (it.has("新增")) { contract.formIdentity(it, null); contract.normalState(it) } else contract.top(it) }
         if (tree.has("新增")) { contract.formIdentity(tree, null); verifyNormal(tree); return "表单控件可读；未填写、未提交" }
         val top = contract.top(tree)
         if (top.fingerprint.isEmpty()) throw VisitMismatch("记录核对失败")

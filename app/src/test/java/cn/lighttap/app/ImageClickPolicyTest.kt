@@ -56,13 +56,14 @@ class ImageClickPolicyTest {
         assertTrue(sameVisitPage(before, after))
         assertTrue(sameVisitPage(before, after.copy(nodes = after.nodes.filterNot { it.path == "r/decoration" })))
     }
-    @Test fun criticalChangesAndUnknownVisibleTextRemainUnstable() {
+    @Test fun unrelatedVisibleTextCanRefreshButTaskAndDialogChangesRemainUnstable() {
         val tree = list().copy(nodes = list().nodes + UiNode("r/timer", text = "倒计时53天") + UiNode("r/message", text = "提示甲"))
         for (changed in listOf(tree.change("r/2/0") { it.copy(text = "样例乙") },
             tree.change("r/2/3") { it.copy(text = "1/1") }, tree.change("r/0") { it.copy(selected = false) },
-            tree.change("r/message") { it.copy(text = "提示乙") }, tree.change("r/timer") { it.copy(text = "正在加载") },
+            tree.change("r/timer") { it.copy(text = "正在加载") },
             tree.copy(nodes = tree.nodes + UiNode("r/popup", text = "确认", clickable = true))))
             assertFalse(sameVisitPage(tree, changed))
+        assertTrue(sameVisitPage(tree, tree.change("r/message") { it.copy(text = "提示乙", bounds = UiBox(5, 5, 50, 50)) }))
     }
     @Test fun hiddenIdentityAndInteractiveCountdownAreNeverIgnored() {
         val tree = list().change("r/2/2") { it.copy(visible = false) }
@@ -137,6 +138,24 @@ class ImageClickPolicyTest {
         val after = before.change("r/countdown") { it.copy(text = "倒计时52天") }
         val button = before.node(contract.top(before).actionPath)
         assertEquals(button, ImageClickGuard("fixture").reacquire(before, button, after, true))
+    }
+    @Test fun bottomRowCanBeIncompleteOrRefreshWithoutBlockingTopTarget() = runTest {
+        val page = list()
+        val bottom = page.nodes.filter { it.path.startsWith("r/2") }.map {
+            it.copy(path = it.path.replaceFirst("r/2", "r/3"),
+                text = if (it.text == "样例甲") "样例乙" else it.text,
+                bounds = it.bounds.copy(top = it.bounds.top + 600, bottom = it.bounds.bottom + 600))
+        }
+        val before = page.copy(nodes = page.nodes + bottom)
+        val after = before.copy(nodes = before.nodes.filterNot { it.path == "r/3/2" } +
+            UiNode("r/message", text = "页面提示已刷新", bounds = UiBox(10, 10, 300, 50)))
+        assertTrue(sameVisitPage(before, after))
+        assertEquals("样例甲", contract.top(after).name)
+        assertThrows(VisitMismatch::class.java) { contract.records(after) }
+        val native = Native(before); var taps = 0
+        val flow = ImageClickFlow(native, { _, _, _ -> native.tree = after; evidence() }, { _, _ -> taps++ }, { 0 })
+        flow.click(before, before.node(contract.top(before).actionPath), true)
+        assertEquals(1, taps)
     }
     @Test fun cancellationDuringImageRecognitionCannotDispatchAfterwards() = runTest {
         val native = Native(list()); var taps = 0

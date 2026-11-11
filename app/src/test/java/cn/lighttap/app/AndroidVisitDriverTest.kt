@@ -59,6 +59,8 @@ class AndroidVisitDriverTest {
         var rejectedNavigationClicks = 0
         var blockedNavigationClicks = 0
         var captures = 0
+        var readTransform: (UiTree) -> UiTree = { it }
+        var temporarySubmitRejections = 0
         var preparationFailure = false
         var rejectSubmitBeforeDispatch = false
         var prepared = 0
@@ -75,6 +77,9 @@ class AndroidVisitDriverTest {
         }
         override suspend fun capture(): UiTree {
             captures++
+            return readTransform(currentTree())
+        }
+        private fun currentTree(): UiTree {
             listOverride?.let { return it }
             if (submitted) return if (now() < readyAt) listTree() else listTree().copy(nodes = listTree().nodes.take(3) + UiNode("r/empty", text = "暂无待办"))
             if (opened) return if (now() < readyAt) form.copy(nodes = form.nodes.take(3)) else form
@@ -82,7 +87,7 @@ class AndroidVisitDriverTest {
         }
         override suspend fun perform(tree: UiTree, node: UiNode, action: Int, value: String?) {
             currentCoroutineContext().ensureActive()
-            if (node.text == "提交" && rejectSubmitBeforeDispatch) throw VisitPreActionMismatch("执行前页面发生变化，已暂停")
+            if (node.text == "提交" && (rejectSubmitBeforeDispatch || temporarySubmitRejections-- > 0)) throw VisitPreActionMismatch("执行前页面发生变化，已暂停")
             actions += if (action == AccessibilityNodeInfo.ACTION_SET_TEXT) node.path else node.text
             when {
                 value != null -> form = form.copy(nodes = form.nodes.map { if (it.path == node.path) it.copy(text = value) else it })
@@ -94,6 +99,31 @@ class AndroidVisitDriverTest {
     private fun TestScope.runner(driver: VisitDriver) = VisitRunner(backgroundScope, driver, { testScheduler.currentTime })
     private fun TestScope.returnVision() = VisitReturnVision { ReturnFrame(ReturnVisual.CLEAR, testScheduler.currentTime) }
     private val plan = VisitSettings(targetPackage = "fixture")
+    @Test fun normalWorkflowAutomaticallyWaitsForTransientMissingFieldsAndOneUnsentRefresh() = runTest {
+        val ui = Ui { testScheduler.currentTime }.apply {
+            temporarySubmitRejections = 1
+            readTransform = { page ->
+                if (!opened && testScheduler.currentTime < 400)
+                    page.copy(nodes = page.nodes.filterNot { it.path == "r/2/2" })
+                else if (opened && testScheduler.currentTime < 1_000)
+                    page.copy(nodes = page.nodes.filterNot { it.path == "r/2/1" })
+                else page.copy(nodes = page.nodes + UiNode("r/status", text = "刷新${captures}"))
+            }
+        }
+        val events = mutableListOf<VisitDebugEvent>()
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, Fence { testScheduler.currentTime }, returnVision(), { testScheduler.currentTime })
+        val runner = VisitRunner(backgroundScope, driver, { testScheduler.currentTime }, diagnostics = VisitDiagnostics { events += it })
+        runner.start(plan, VisitExecution.FORMAL)
+        advanceTimeBy(5_000); runCurrent()
+        assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
+        assertEquals(1L, runner.state.value.rounds)
+        assertEquals(1, ui.actions.count { it == "提交" })
+        assertEquals(1, ui.actions.count { it == "走访" })
+        assertEquals(2, ui.actions.count { it.startsWith("r/") })
+        assertFalse(events.any { it.kind == VisitDebugKind.ERROR })
+        assertEquals(1, events.count { it.kind == VisitDebugKind.RECHECK })
+        assertFalse(driver.pendingSubmission)
+    }
     private suspend fun readyForm(driver: AndroidVisitDriver) {
         driver.begin()
         for (step in listOf(VisitStep.FIND_LIST, VisitStep.OPEN_FORM, VisitStep.WAIT_FORM,
@@ -358,7 +388,7 @@ class AndroidVisitDriverTest {
         driver.execute(VisitStep.FIND_LIST)
         val list = events.last { it.kind == VisitDebugKind.LIST }
         assertEquals(1, list.previousRecords); assertEquals(2, list.records)
-        assertEquals(true, list.listChanged); assertEquals(true, list.topUnchanged)
+        assertNull(list.listChanged); assertEquals(true, list.topUnchanged)
         driver.execute(VisitStep.OPEN_FORM)
         assertEquals(listOf("走访"), ui.actions)
         assertFalse(driver.pendingSubmission)
