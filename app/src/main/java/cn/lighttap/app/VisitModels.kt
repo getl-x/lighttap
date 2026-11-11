@@ -17,16 +17,16 @@ data class VisitSettings(val targetPackage: String = "", val mode: VisitRunMode 
     fun limit(execution: VisitExecution): Long? = if (execution == VisitExecution.STEP_TEST || mode == VisitRunMode.ONCE) 1 else if (mode == VisitRunMode.COUNT) countText.toLong() else null
 }
 enum class VisitStep(val title: String, val expected: String) {
-    FIND_LIST("读取待办列表", "读取当前走访按钮"),
+    FIND_LIST("识别待办列表", "列表稳定，顶部记录和走访按钮唯一明确"),
     OPEN_FORM("点击走访", "仅触发顶部记录的走访按钮一次"),
-    WAIT_FORM("读取新增表单", "等待输入框显示"),
-    FILL_ADDRESS("填写检查地址", "直接写入检查地址"),
+    WAIT_FORM("核验新增表单", "表单与所选记录一致"),
+    FILL_ADDRESS("填写检查地址", "地址写入并回读一致"),
     LOCATE_DESCRIPTION("定位走访描述", "描述输入框可见，每次滚动独立确认"),
-    FILL_DESCRIPTION("填写走访描述", "直接写入走访描述"),
-    VERIFY_FORM("定位提交按钮", "读取当前提交按钮"),
+    FILL_DESCRIPTION("填写走访描述", "描述写入并回读一致"),
+    VERIFY_FORM("提交前核验", "记录、两字段和正常状态均已核验"),
     SUBMIT("提交一次", "提交仅派发一次，结果待确认"),
-    WAIT_LIST("等待读取待办列表", "读到待办页后继续"),
-    GAP("开始下一轮", "读取下一个走访按钮"),
+    WAIT_LIST("核验返回列表", "表单退出，原顶部记录移除，列表稳定"),
+    GAP("开始下一轮", "重新核验列表后准备下一条"),
 }
 enum class VisitStatus { IDLE, RUNNING, WAITING, CHECKPOINT, PAUSED, ERROR, FINISH_CONFIRM, COMPLETED }
 data class VisitState(
@@ -52,15 +52,13 @@ class VisitNavigationRejected : VisitMismatch("系统未接受走访控件点击
 class VisitPreActionMismatch(reason: String) : VisitMismatch(reason)
 /** Only an inconclusive pixel classification can be re-observed; explicit abnormal states cannot. */
 class VisitChoiceUncertain : VisitMismatch("选中样式不匹配或被遮挡，视觉核验不确定，已暂停")
-data class VisitEffect(val repeat: Boolean = false, val message: String = "已执行", val emptyList: Boolean = false)
+data class VisitEffect(val repeat: Boolean = false, val message: String = "已核验", val emptyList: Boolean = false)
 interface VisitDriver {
     val pendingSubmission: Boolean
     val recoveryStep: VisitStep? get() = if (pendingSubmission) VisitStep.WAIT_LIST else null
     fun submissionWaitMs(intervalMs: Long): Long = 0
     val managesSubmissionTiming: Boolean get() = false
     val submissionPreparationLeadMs: Long get() = 0
-    val waitsForControls: Boolean get() = false
-    val waitingMessage: String? get() = null
     suspend fun prepareSubmission() = Unit
     fun invalidatePrepared() = Unit
     suspend fun begin()

@@ -9,7 +9,7 @@ fun interface VisitDiagnostics {
 
 enum class VisitDebugKind {
     ARM, START, RESUME, PAUSE, STOP, STEP_START, STEP_DONE, WAIT, ERROR, COMPLETE, PROBE,
-    CAPTURE, STABILITY, RECHECK, OVERLAY_AVOID, ACTION, NAVIGATION_CHECK, LIST, RETURN_CHECK, RETURN_CONFIRMED, CHOICE_CHECK, IMAGE_CHECK, MODEL_WARMUP, SUBMIT_PREPARED,
+    CAPTURE, STABILITY, OVERLAY_AVOID, ACTION, NAVIGATION_CHECK, LIST, RETURN_CHECK, RETURN_CONFIRMED, CHOICE_CHECK, IMAGE_CHECK, MODEL_WARMUP, SUBMIT_PREPARED,
 }
 enum class VisitDebugAction { CLICK, FILL, SCROLL, OTHER }
 
@@ -79,7 +79,6 @@ data class VisitDebugEvent(
 /** Allow only application-owned messages. Future/raw platform errors fall back
  * to a fixed label rather than accidentally exporting business text. */
 internal fun safeVisitDebugReason(reason: String): String = when {
-    reason.contains("\n已等待 ") -> safeVisitDebugReason(reason.substringBefore("\n已等待 "))
     reason in DEBUG_REASONS -> reason
     listOf("检查地址", "走访描述", "姓名", "身份证", "居住地址").any { label ->
         reason == "字段标签缺失或不唯一：$label" || reason == "不能唯一关联输入框：$label"
@@ -91,11 +90,6 @@ internal fun safeVisitDebugReason(reason: String): String = when {
 }
 
 private val DEBUG_REASONS = setOf(
-    "等待目标应用页面恢复", "等待目标控件恢复", "等待目标控件显示", "等待可滚动页面",
-    "等待待办页和走访按钮；页面恢复后自动继续", "等待返回待办列表；不会重复提交",
-    "等待走访按钮；通知或弹窗结束后自动继续", "等待提交按钮；通知或弹窗结束后自动继续",
-    "等待检查地址输入框；页面恢复后自动继续", "等待走访描述输入框；页面恢复后自动继续",
-    "已读取表单输入框；未填写、未提交", "已读取走访按钮；未点击", "已读取当前按钮；未点击",
     "图像目标控件不完整可见，已暂停", "图像按钮识别不唯一或置信度不足，已暂停", "图像采样已过期，请重新识别",
     "图像定位与当前按钮不一致，已暂停", "图像页面状态无法确认，已暂停", "图像识别期间目标窗口变化，已暂停",
     "图像识别期间页面结构变化，已暂停",

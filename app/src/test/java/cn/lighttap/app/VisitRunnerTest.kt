@@ -16,17 +16,11 @@ class VisitRunnerTest {
         var latency = 0L
         var scrollRepeats = 0
         var fenceThenFail = false
-        var refreshRejections = 0
-        var dispatchAttempts = 0
         val submissions = mutableListOf<Long>()
         var time: () -> Long = { 0 }
         override suspend fun begin() = Unit
         override suspend fun validate(step: VisitStep) { if (step == rejectedValidation) throw VisitMismatch("校验不匹配") }
         override suspend fun execute(step: VisitStep): VisitEffect {
-            if (step == VisitStep.SUBMIT) {
-                dispatchAttempts++
-                if (refreshRejections-- > 0) throw VisitPreActionMismatch("执行前页面发生变化，已暂停")
-            }
             if (step == rejected) throw VisitMismatch("步骤不匹配")
             actions += step
             if (step == VisitStep.SUBMIT) { submissions += time(); pendingSubmission = true; if (fenceThenFail) throw VisitMismatch("提交结果不明确") }
@@ -154,21 +148,6 @@ class VisitRunnerTest {
         val d = Driver().apply { latency = 31_000 }; val e = runner(d)
         e.start(plan, VisitExecution.FORMAL); runCurrent(); advanceTimeBy(30_100); runCurrent()
         assertEquals(VisitStatus.ERROR, e.state.value.status); advanceTimeBy(60_000); runCurrent(); assertEquals(1, d.actions.size)
-    }
-    @Test fun undispatchedRefreshHasTwoRechecksAndCanBeCancelledBeforeAnySubmit() = runTest {
-        val d = Driver().apply { refreshRejections = 10 }
-        val e = runner(d)
-        e.start(plan, VisitExecution.FORMAL); advanceTimeBy(1_000); runCurrent()
-        assertEquals(VisitStatus.ERROR, e.state.value.status)
-        assertEquals(3, d.dispatchAttempts)
-        assertTrue(d.submissions.isEmpty())
-        e.stop()
-        val cancelledDriver = Driver().apply { refreshRejections = 1 }
-        val cancelled = runner(cancelledDriver)
-        cancelled.start(plan, VisitExecution.FORMAL); runCurrent()
-        cancelled.stop(); advanceTimeBy(1_000); runCurrent()
-        assertEquals(1, cancelledDriver.dispatchAttempts)
-        assertTrue(cancelledDriver.submissions.isEmpty())
     }
     @Test fun innerCancellationCannotLeaveAStoppedWorkerDisplayedAsRunning() = runTest {
         var cancelledOnce = false

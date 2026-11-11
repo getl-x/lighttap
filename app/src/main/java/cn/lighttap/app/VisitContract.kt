@@ -195,9 +195,7 @@ class VisitContract(val target: String) {
         val records = records(tree)
         return if (records.isEmpty()) "empty" else records.joinToString("|") { it.fingerprint }
     }
-    fun records(tree: UiTree): List<VisitRecord> = readRecords(tree, topOnly = false)
-    internal fun topRecords(tree: UiTree): List<VisitRecord> = readRecords(tree, topOnly = true)
-    private fun readRecords(tree: UiTree, topOnly: Boolean): List<VisitRecord> {
+    fun records(tree: UiTree): List<VisitRecord> {
         target(tree)
         val pending = tree.exact("待办", true).singleOrNull() ?: throw VisitMismatch("未识别到唯一待办页签")
         if (!tree.has("已完成")) throw VisitMismatch("列表页结构不匹配")
@@ -209,19 +207,13 @@ class VisitContract(val target: String) {
             if (tree.nodes.any { it.visible && it.readableText.trim() in setOf("暂无数据", "暂无待办", "暂无待办记录") }) return emptyList()
             throw VisitMismatch("未读到走访控件，无法可靠识别网页内容")
         }
-        fun visitCount(parent: UiNode) = tree.exact("走访").count { it.path == parent.path || it.path.startsWith(parent.path + "/") }
-        fun historyCount(parent: UiNode) = tree.exact("走访记录").count { it.path == parent.path || it.path.startsWith(parent.path + "/") }
-        val cards = actions.associateWith { action -> tree.ancestors(action).firstOrNull { parent ->
-            visitCount(parent) == 1 && historyCount(parent) == 1 && tree.under(parent.path).any {
-                isLabel(it.readableText, "居住地址") || canonicalLabel(it.readableText).startsWith("居住地址：") || canonicalLabel(it.readableText).startsWith("居住地址:")
+        val result = actions.map { action ->
+            fun visitCount(parent: UiNode) = tree.exact("走访").count { it.path == parent.path || it.path.startsWith(parent.path + "/") }
+            fun historyCount(parent: UiNode) = tree.exact("走访记录").count { it.path == parent.path || it.path.startsWith(parent.path + "/") }
+            val card = tree.ancestors(action).firstOrNull { parent ->
+                val nodes = tree.under(parent.path)
+                visitCount(parent) == 1 && historyCount(parent) == 1 && nodes.any { isLabel(it.readableText, "居住地址") || canonicalLabel(it.readableText).startsWith("居住地址：") || canonicalLabel(it.readableText).startsWith("居住地址:") }
             }
-        } }
-        fun actionTop(action: UiNode) = cards[action]?.bounds?.top ?: action.bounds.top
-        val ordered = actions.sortedBy(::actionTop)
-        if (topOnly && ordered.size > 1 && actionTop(ordered[0]) == actionTop(ordered[1]))
-            throw VisitMismatch("不能确定最上方记录")
-        val result = (if (topOnly) ordered.take(1) else actions).map { action ->
-            val card = cards[action]
             val actionRow = tree.ancestors(action).firstOrNull { visitCount(it) == 1 && historyCount(it) == 1 }
                 ?: throw VisitMismatch("走访按钮与记录按钮不能唯一关联")
             val scope: UiTree
@@ -265,7 +257,7 @@ class VisitContract(val target: String) {
         if (result.size > 1 && tree.node(result[0].cardPath).bounds.top == tree.node(result[1].cardPath).bounds.top) throw VisitMismatch("不能确定最上方记录")
         return result
     }
-    fun top(tree: UiTree): VisitRecord = topRecords(tree).firstOrNull() ?: throw VisitMismatch("暂无待办，请用户查看")
+    fun top(tree: UiTree): VisitRecord = records(tree).firstOrNull() ?: throw VisitMismatch("暂无待办，请用户查看")
     fun formIdentity(tree: UiTree, record: VisitRecord?) {
         target(tree)
         if (loading(tree)) throw VisitMismatch("表单仍在加载")

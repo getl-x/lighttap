@@ -1,46 +1,37 @@
 package cn.lighttap.app
 
-/** Compare the current task, not every piece of text published by the WebView.
- * Unknown pages still require equality. Target geometry remains current, and
- * new interactive surfaces (such as dialog buttons) invalidate an action. */
+/** Keep business identity/state and every visible/interactive surface. Only
+ * known noninteractive countdown text and hidden noninteractive decoration may
+ * vary. Unknown pages/labels keep the original exact comparison. */
 internal fun sameVisitPage(before: UiTree, after: UiTree): Boolean {
     if (before == after) return true
     if (before.packageName != after.packageName || before.windowId != after.windowId) return false
     val oldKey = businessKey(before) ?: return false
     val newKey = businessKey(after) ?: return false
-    return oldKey == newKey
+    return oldKey == newKey && safetyNodes(before) == safetyNodes(after)
 }
-
-/** Class/view IDs, descriptions and wrapper rectangles can be republished
- * independently. Preserve the facts used to operate this control. */
-private fun controlKey(node: UiNode) = listOf(node.path, node.bounds, node.visible, node.enabled,
-    node.clickable, node.editable, node.selected, node.checked)
 
 private fun businessKey(tree: UiTree): List<Any>? = try {
     val contract = VisitContract(tree.packageName)
     if (contract.loading(tree)) null
     else if (tree.has("新增")) {
         contract.formIdentity(tree, null)
-        val address = contract.field(tree, "检查地址")
-        val description = contract.field(tree, "走访描述")
-        val normal = contract.choiceButton(tree, "正常")
-        val abnormal = contract.choiceButton(tree, "异常")
-        val submit = contract.submit(tree)
-        val controls = listOf(address, description, normal, abnormal, submit)
-        listOf("form", contract.formFingerprint(tree), contract.value(address), contract.value(description),
-            contract.normalState(tree), controls.map(::controlKey), otherControls(tree, controls.map { it.path }))
+        listOf("form", contract.formFingerprint(tree), contract.field(tree, "检查地址"), contract.field(tree, "走访描述"),
+            contract.normalState(tree), contract.choiceButton(tree, "正常"), contract.choiceButton(tree, "异常"), contract.submit(tree))
     } else {
-        // Bottom rows may refresh or be partially exposed. Validate them when
-        // selected, rather than invalidating the current top record's click.
-        val records = contract.topRecords(tree)
-        val known = listOf("待办", "已完成", "走访", "走访记录").flatMap { label ->
-            tree.exact(label).flatMap { tree.controlAncestors(it, setOf("待办", "已完成", "走访", "走访记录")) }
-        }.map { it.path }
-        listOf("list", records.map { listOf(it.fingerprint, controlKey(tree.node(it.actionPath))) }, otherControls(tree, known))
+        val records = contract.records(tree)
+        listOf("list", records.map { listOf(it.fingerprint, it.cardPath, it.actionPath, tree.node(it.actionPath)) })
     }
 } catch (_: VisitMismatch) { null }
 
-private fun otherControls(tree: UiTree, known: List<String>): List<Any> = tree.nodes.asSequence()
-    .filter { node -> node.visible && (node.clickable || node.editable || node.selected || node.checked ||
-        node.className.endsWith("Dialog")) && known.none { node.path == it || node.path.startsWith("$it/") } }
-    .map { listOf(controlKey(it), canonicalLabel(it.readableText)) }.toList()
+private val countdownDecoration = Regex("倒计时[0-9]{1,5}天")
+private fun safetyNodes(tree: UiTree): List<UiNode> = tree.nodes.asSequence()
+    .filter { it.visible || it.editable || it.clickable || it.selected || it.checked || it.scrollable }
+    .map { node ->
+        if (!node.editable && !node.clickable && !node.selected && !node.checked && !node.scrollable &&
+            countdownDecoration.matches(canonicalLabel(node.readableText)) &&
+            (node.description.isBlank() || canonicalLabel(node.description) == canonicalLabel(node.text)) &&
+            tree.under(node.path).size == 1)
+            node.copy(text = "[countdown]", description = "")
+        else node
+    }.toList()

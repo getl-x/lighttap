@@ -44,22 +44,6 @@ class VisitObservationTest {
         } catch (error: VisitMismatch) { assertEquals("wrong target", error.reason) }
         assertEquals(1, reads)
     }
-    @Test fun identicalButIncompleteReadsWaitForFieldsBeforeReturning() = runTest {
-        var reads = 0
-        val observer = VisitObservation { if (++reads < 5) first else ready }
-        val result = observer.stable { if (it == first) throw VisitMismatch("无法确定记录核对字段：居住地址") }
-        assertEquals(ready, result)
-        assertEquals(6, reads)
-        assertEquals(400L, testScheduler.currentTime)
-    }
-    @Test fun confirmedIdentityConflictIsNotTreatedAsAnIncompleteRead() = runTest {
-        var reads = 0
-        try {
-            VisitObservation { reads++; ready }.stable { throw VisitMismatch("表单记录与所选卡片不一致") }
-            fail("Conflict ignored")
-        } catch (error: VisitMismatch) { assertEquals("表单记录与所选卡片不一致", error.reason) }
-        assertEquals(1, reads)
-    }
     @Test fun continuouslyChangingPageHasBoundedWait() = runTest {
         var reads = 0
         try {

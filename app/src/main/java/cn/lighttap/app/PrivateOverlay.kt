@@ -77,7 +77,7 @@ class PrivateOverlay(private val service: ClickAccessibilityService, private val
         }
         val title = TextView(service).apply { text = if (compact) "轻点 · ${if (mode == VisitExecution.FORMAL) "正式运行" else "逐步测试"} · 拖动移动" else "轻点 · 拖动此处移动"; textSize = 12f; maxLines = 2; setTextColor(Color.rgb(200, 192, 255)); setPadding(0, dp(6), 0, dp(if (compact) 4 else 10)) }
         layout.addView(title)
-        status = TextView(service).apply { textSize = 12f; maxLines = if (compact) 5 else 12; setPadding(0, 0, 0, dp(6)); layout.addView(this) }
+        status = TextView(service).apply { textSize = 12f; maxLines = if (compact) 3 else 12; setPadding(0, 0, 0, dp(6)); layout.addView(this) }
         fun row(vararg buttons: Button) {
             layout.addView(LinearLayout(service).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -85,12 +85,12 @@ class PrivateOverlay(private val service: ClickAccessibilityService, private val
             })
         }
         action = button("开始", primary = true) { controller.toggle() }
-        if (compact) row(action!!, button("停止", destructive = true) { controller.stop() }, button("清缓存") { controller.clearRuntimeCache() })
+        if (compact) row(action!!, button("停止", destructive = true) { controller.stop() })
         else {
             row(action!!)
             row(button("停止", destructive = true) { controller.stop() }, button("查看") { controller.openPanel() })
-            row(button("清理运行缓存") { controller.clearRuntimeCache() })
         }
+        row(button("清理运行缓存") { controller.clearRuntimeCache() })
         if (!compact || mode == VisitExecution.FORMAL) {
             probe = button(if (compact) "检查" else "只读检查") { controller.probe() }
             if (compact) row(probe!!, button("查看") { controller.openPanel() }, button("隐藏") { controller.stopAndHide() })

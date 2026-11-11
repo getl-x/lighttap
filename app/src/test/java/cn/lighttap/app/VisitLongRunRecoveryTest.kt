@@ -9,7 +9,7 @@ import org.junit.Test
  * runner together under slow/partial reads, loading and rejected dispatch. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class VisitLongRunRecoveryTest {
-    @Test fun sixtyRoundsRecoverFromProvenUndispatchedChangesWithoutManualPausesOrDuplicates() = runTest {
+    @Test fun sixtyRoundsSurviveMixedSlowReadsLoadingAndExplicitRecoveryWithoutDuplicates() = runTest {
         val count = 60
         val now = { testScheduler.currentTime }
         val screen = UiBox(0, 0, 720, 1600)
@@ -83,20 +83,25 @@ class VisitLongRunRecoveryTest {
                 }
             }
         }
-        val driver = AndroidVisitDriver(bridge, fence, now)
+        val driver = AndroidVisitDriver(bridge, VisitChoiceVerifier { _, _ -> fail("Explicit normal needs no fallback") }, fence,
+            VisitReturnVision { ReturnFrame(if (replyAt != null) ReturnVisual.BLOCKED else ReturnVisual.CLEAR, now()) }, now)
         val runner = VisitRunner(backgroundScope, driver, now)
         runner.start(VisitSettings(targetPackage = "fixture", mode = VisitRunMode.COUNT, countText = count.toString()), VisitExecution.FORMAL)
         var recoveries = 0
         repeat(500) {
             if (runner.state.value.status != VisitStatus.COMPLETED) {
                 advanceTimeBy(10_000); runCurrent()
-                if (runner.state.value.status == VisitStatus.ERROR) { recoveries++; fail(runner.state.value.message) }
+                if (runner.state.value.status == VisitStatus.ERROR) {
+                    assertEquals("Only the injected pre-action rejection may pause", "执行前页面发生变化，已暂停", runner.state.value.message)
+                    assertEquals(VisitStep.SUBMIT, runner.state.value.step); assertFalse(driver.pendingSubmission)
+                    recoveries++; runner.resume()
+                }
             }
         }
         assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
         assertEquals(count.toLong(), runner.state.value.rounds)
         assertEquals((0 until count).toList(), clickedRecords)
-        assertEquals(9, rejected); assertEquals(0, recoveries)
+        assertEquals(9, rejected); assertEquals(rejected, recoveries)
         assertTrue(clicks.zipWithNext().all { (a, b) -> b - a >= 61_000 })
         assertFalse(driver.pendingSubmission)
         runner.stop()

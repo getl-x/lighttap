@@ -115,7 +115,8 @@ class ScrolledVisitFormTest {
         for (recognition in VisitRecognition.entries) {
             val ui = Ui()
             val bridge = SelectedVisitUiAccess({ recognition }, ui, ui)
-            val driver = AndroidVisitDriver(bridge, Fence(), { testScheduler.currentTime })
+            val driver = AndroidVisitDriver(bridge, VisitChoiceVerifier { _, _ -> }, Fence(),
+                VisitReturnVision { ReturnFrame(ReturnVisual.CLEAR, testScheduler.currentTime) }, { testScheduler.currentTime })
             val runner = VisitRunner(backgroundScope, driver, { testScheduler.currentTime })
             runner.start(VisitSettings(targetPackage = "fixture", recognition = recognition), VisitExecution.STEP_TEST)
             advanceTimeBy(1_000); runCurrent()
@@ -137,7 +138,7 @@ class ScrolledVisitFormTest {
             runner.stop()
         }
     }
-    @Test fun imageSubmissionDoesNotInspectHiddenIdentity() = runTest {
+    @Test fun imageSubmissionReacquiresClippedIdentityAndRejectsAChangedRecord() = runTest {
         val ui = Ui().apply {
             opened = true
             tree = form(collapsed = true).change("r/description/input") { it.copy(text = VisitContract.DESCRIPTION) }
@@ -151,7 +152,7 @@ class ScrolledVisitFormTest {
         assertEquals(1, taps)
         val second = flow.prepare(ui.tree, contract.submit(ui.tree), false)
         ui.tree = ui.tree.change("r/name-value") { it.copy(text = "样例乙") }
-        flow.dispatch(second)
-        assertEquals(2, taps)
+        try { flow.dispatch(second); fail("Changed hidden identity was submitted") } catch (_: VisitMismatch) { }
+        assertEquals(1, taps)
     }
 }

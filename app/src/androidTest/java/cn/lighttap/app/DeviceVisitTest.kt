@@ -251,7 +251,7 @@ class DeviceVisitTest {
     @Test fun recoverPendingReadOnly() = runBlocking {
         assumeTrue(InstrumentationRegistry.getArguments().getString("visitRecover") == "true")
         val service = service()
-        val driver = AndroidVisitDriver(service, AndroidUiBridge(service, PrivateModel.TARGET) { null })
+        val driver = AndroidVisitDriver(service, AndroidUiBridge(service, PrivateModel.TARGET) { null }, AndroidChoiceVision(service))
         assertTrue(driver.pendingSubmission)
         driver.begin(); driver.validate(VisitStep.WAIT_LIST)
         withTimeout(30_000) { driver.execute(VisitStep.WAIT_LIST) }
@@ -296,7 +296,7 @@ class DeviceVisitTest {
                 }
             }
         }
-        val actual = AndroidVisitDriver(service, bridge)
+        val actual = AndroidVisitDriver(service, bridge, AndroidChoiceVision(service))
         assertFalse("Resolve any previous pending submission first", actual.pendingSubmission)
         var submissions = 0
         val driver = object : VisitDriver by actual {
@@ -343,7 +343,7 @@ class DeviceVisitTest {
                 assertEquals(rounds, submitEnds.size)
                 assertEquals(rounds, submitDispatches.size)
                 assertEquals(rounds, confirmations.size)
-                val restored = AndroidVisitDriver(service, deviceBridge)
+                val restored = AndroidVisitDriver(service, deviceBridge, AndroidChoiceVision(service))
                 assertTrue("Cooldown must survive driver recreation", restored.submissionWaitMs(MIN_SUBMISSION_INTERVAL_MS) > 0)
                 assertFalse(actual.pendingSubmission)
             } else {

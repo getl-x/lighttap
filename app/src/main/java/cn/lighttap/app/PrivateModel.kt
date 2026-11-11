@@ -123,6 +123,7 @@ class PrivateModel(private val context: Context) {
         verified.value = preferences.getBoolean(updated.recognition.confirmationKey, false)
         saving.value = true
         settingsQueue.trySend(updated)
+        if (updated.recognition == VisitRecognition.IMAGE) controller?.warmImageRecognition()
     }
     fun connect(service: ClickAccessibilityService) {
         controller?.disconnect()
@@ -157,8 +158,8 @@ class PrivateController(private val service: ClickAccessibilityService, private 
     private val imageBridge = AndroidImageVisitUiAccess(service, nativeBridge, surface, model.debugLog)
     private val bridge = DiagnosedVisitUiAccess(SelectedVisitUiAccess({ model.settings.value.recognition },
         SurfaceVisitUiAccess(nativeBridge, surface), imageBridge), model.debugLog, { SystemClock.elapsedRealtime() })
-    private val driver: AndroidVisitDriver = AndroidVisitDriver(service, bridge, model.debugLog,
-        { if (shown) overlay.prepare(runner.state.value, mode) })
+    private val driver: AndroidVisitDriver = AndroidVisitDriver(service, bridge, AndroidChoiceVision(service, surface), model.debugLog,
+        surface, { if (shown) overlay.prepare(runner.state.value, mode) })
     private val runner: VisitRunner = VisitRunner(scope, driver, { SystemClock.elapsedRealtime() }, { notifyPause() }, { model.confirmTest() },
         onCompleted = { vibration.complete(service.appModel.completionVibration.mode.value) }, diagnostics = model.debugLog)
     private var mode = VisitExecution.STEP_TEST
@@ -188,7 +189,7 @@ class PrivateController(private val service: ClickAccessibilityService, private 
         val result = driver.probe()
         if (model.settings.value.recognition == VisitRecognition.IMAGE) {
             imageBridge.probe()
-            "已读取当前按钮；未点击"
+            "本机识字与按钮定位可用；未填写、未点击、未提交"
         } else result
     })
     val probing get() = probeCheck.active
@@ -221,11 +222,12 @@ class PrivateController(private val service: ClickAccessibilityService, private 
     fun arm(execution: VisitExecution) {
         if (model.runtimeCacheBusy.value) return
         if (!authorized()) return
+        warmImageRecognition()
         if (probeCheck.active) { service.notice("只读检查进行中，请稍后开始"); return }
         if (runner.state.value.active) { service.notice("请先停止当前任务"); return }
         if (service.appModel.runtime.value.status in setOf(RunStatus.RUNNING, RunStatus.PAUSED)) { service.notice("请先停止普通连点任务"); return }
         if (execution == VisitExecution.FORMAL && !model.verified.value) { service.notice("请先完成一次逐步测试并确认结果"); return }
-        if (Build.VERSION.SDK_INT < 30) { service.notice("专用功能需要 Android 11 及以上"); return }
+        if (Build.VERSION.SDK_INT < 30) { service.notice("专用功能需要 Android 11 及以上的画面核验能力"); return }
         if (model.saving.value) { service.notice("设置正在保存，请稍后开始"); return }
         val error = model.settings.value.error() ?: model.storageError.value
         if (error != null) { service.notice(error); return }
@@ -236,8 +238,8 @@ class PrivateController(private val service: ClickAccessibilityService, private 
         service.notice("请切换到目标待办页，再通过控制条开始或只读检查")
     }
     fun toggle() {
-        if (!authorized()) return
         if (model.runtimeCacheBusy.value) return
+        if (!authorized()) return
         if (probeCheck.active) return
         val state = runner.state.value
         when {
@@ -254,6 +256,7 @@ class PrivateController(private val service: ClickAccessibilityService, private 
         }
     }
     fun probe() {
+        if (model.runtimeCacheBusy.value) return
         if (!authorized() || runner.state.value.active) return
         probeCheck.start()
     }
@@ -266,6 +269,7 @@ class PrivateController(private val service: ClickAccessibilityService, private 
         scope.launch {
             try {
                 runner.clearRuntime()
+                warming?.cancelAndJoin(); warming = null
                 imageBridge.clearRuntime()
                 if (Build.VERSION.SDK_INT >= 33) service.clearCache()
             } finally { model.runtimeCacheBusy.value = false }
@@ -279,6 +283,12 @@ class PrivateController(private val service: ClickAccessibilityService, private 
         vibration.remindBeforeBreak()
     }
     fun openPanel() { pause("已返回设置页，请查看后手动继续"); service.openSettings() }
+    fun foregroundChanged(packageName: String) {
+        if (runner.state.value.busy && packageName.isNotBlank() && packageName != PrivateModel.TARGET && packageName != service.packageName) {
+            val inputMethod = service.getSystemService(android.view.inputmethod.InputMethodManager::class.java).enabledInputMethodList.any { it.packageName == packageName }
+            if (!inputMethod) pause("前台应用变化，已暂停，请查看", error = true)
+        }
+    }
     fun disconnect() {
         stopAndHide(); workReminder.detach()
         scope.launch(NonCancellable + Dispatchers.IO) { imageBridge.close() }

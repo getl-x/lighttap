@@ -37,6 +37,8 @@ internal object ImageClickLocator {
         if (!box.nonEmpty || box.left < 0 || box.top < 0 || box.right > evidence.width || box.bottom > evidence.height ||
             box.left < button.left || box.top < button.top || box.right > button.right || box.bottom > button.bottom)
             throw VisitMismatch("图像定位与当前按钮不一致，已暂停")
+        if (navigation && !evidence.clearList || !navigation && !evidence.normal)
+            throw VisitMismatch("图像页面状态无法确认，已暂停")
     }
 }
 
@@ -50,6 +52,37 @@ internal fun imageOcrRegion(button: UiBox, width: Int, height: Int): UiBox {
         (button.right + padding).coerceAtMost(width), (button.bottom + padding).coerceAtMost(height))
 }
 
+/** Reacquire by meaning, with the existing exact record/value rules. Unrelated
+ * countdown text may change during OCR; identity, window and target may not. */
+internal class ImageClickGuard(target: String) {
+    private val contract = VisitContract(target)
+    fun reacquire(before: UiTree, expected: UiNode, after: UiTree, navigation: Boolean): UiNode {
+        contract.target(before); contract.target(after)
+        if (before.windowId != after.windowId) throw VisitMismatch("图像识别期间目标窗口变化，已暂停")
+        // A newly published dialog/overlay or changed control geometry is not
+        // an unrelated text refresh. Never click through such a transition.
+        if (!sameVisitPage(before, after))
+            throw VisitMismatch("图像识别期间页面结构变化，已暂停")
+        val original: UiNode
+        val current: UiNode
+        if (navigation) {
+            val old = contract.top(before)
+            val fresh = contract.top(after)
+            if (old.fingerprint != fresh.fingerprint) throw VisitMismatch("顶部记录变化，禁止点击")
+            original = before.node(old.actionPath); current = after.node(fresh.actionPath)
+        } else {
+            contract.form(before, null, visualFallback = true); contract.verifyValues(before)
+            contract.form(after, null, visualFallback = true); contract.verifyValues(after)
+            if (contract.formFingerprint(before) != contract.formFingerprint(after))
+                throw VisitMismatch("表单记录与所选卡片不一致")
+            original = contract.submit(before); current = contract.submit(after)
+        }
+        if (expected != original || !current.visible || !current.enabled || !current.bounds.nonEmpty)
+            throw VisitMismatch("图像定位与当前按钮不一致，已暂停")
+        return current
+    }
+}
+
 /** One OCR attempt, one possible gesture. No accepted/uncertain action ever
  * falls back to a node click, another engine, or a second gesture. */
 internal class ImageClickFlow(
@@ -58,17 +91,15 @@ internal class ImageClickFlow(
     private val tap: suspend (UiTree, UiBox) -> Unit,
     private val now: () -> Long,
 ) {
+    private val guard = ImageClickGuard(native.target)
     suspend fun prepare(tree: UiTree, node: UiNode, navigation: Boolean): PreparedImageClick {
         try {
-            val label = if (navigation) "走访" else "提交"
-            val readable = tree.under(node.path).any { !it.editable && canonicalLabel(it.readableText) == label }
-            val screen = tree.nodes.firstOrNull()?.bounds
-            val evidence = if (readable && screen != null && screen.right >= node.bounds.right && screen.bottom >= node.bounds.bottom)
-                ImageClickEvidence(node.bounds, now(), screen.right, screen.bottom, true, true)
-            else read(tree, node, navigation)
-            ImageClickLocator.validate(evidence, node.bounds, navigation, now())
+            val before = native.capture()
+            val current = guard.reacquire(tree, node, before, navigation)
+            val evidence = read(before, current, navigation)
+            ImageClickLocator.validate(evidence, current.bounds, navigation, now())
             currentCoroutineContext().ensureActive()
-            return PreparedImageClick(tree, node, tree, node, evidence, navigation)
+            return PreparedImageClick(tree, node, before, current, evidence, navigation)
         } catch (error: VisitMismatch) { throw VisitPreActionMismatch(error.reason) }
     }
     suspend fun dispatch(plan: PreparedImageClick) {
@@ -76,10 +107,13 @@ internal class ImageClickFlow(
         var dispatched = false
         try {
             currentCoroutineContext().ensureActive()
-            ImageClickLocator.validate(plan.evidence, plan.observedNode.bounds, plan.navigation, now())
+            val after = native.capture()
+            val final = guard.reacquire(plan.observed, plan.observedNode, after, plan.navigation)
+            if (final.bounds != plan.observedNode.bounds) throw VisitMismatch("图像识别期间按钮移动，已暂停")
+            ImageClickLocator.validate(plan.evidence, final.bounds, plan.navigation, now())
             currentCoroutineContext().ensureActive()
             dispatched = true
-            tap(plan.observed, plan.evidence.box)
+            tap(after, plan.evidence.box)
         } catch (error: VisitMismatch) {
             if (!dispatched) throw VisitPreActionMismatch(error.reason)
             throw error

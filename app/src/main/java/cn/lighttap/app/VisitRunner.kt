@@ -37,7 +37,7 @@ class VisitRunner(
     fun resume() {
         if (state.value.status !in setOf(VisitStatus.CHECKPOINT, VisitStatus.PAUSED, VisitStatus.ERROR) || worker?.isActive == true) return
         if (stepBudget <= 0) stepBudget = 30_000 // Explicit user retry, never an automatic retry.
-        mutable.value = state.value.copy(status = VisitStatus.RUNNING, message = "继续读取当前控件")
+        mutable.value = state.value.copy(status = VisitStatus.RUNNING, message = "重新核验当前页面")
         debug(VisitDebugKind.RESUME)
         launchWorker()
     }
@@ -67,9 +67,9 @@ class VisitRunner(
                             awaitSubmissionSlot(token, lead)
                             ensureActive()
                             if (token != generation) return@launch
-                            mutable.value = state.value.copy(message = "正在准备提交", pendingSubmission = driver.pendingSubmission)
+                            mutable.value = state.value.copy(message = "正在提前核验提交页面", pendingSubmission = driver.pendingSubmission)
                             stepSince = now()
-                            runDriverStep { retryUndispatched { driver.prepareSubmission() } }
+                            withTimeout(stepBudget.coerceAtLeast(1)) { driver.prepareSubmission() }
                             debug(VisitDebugKind.SUBMIT_PREPARED, durationMs = stepSince?.let { now() - it })
                             chargeStep()
                         }
@@ -81,10 +81,10 @@ class VisitRunner(
                     debug(VisitDebugKind.STEP_START)
                     if (step == VisitStep.WAIT_LIST && stepBudget == 30_000L) stepBudget = 120_000
                     stepSince = now()
-                    val effect = runDriverStep {
+                    val effect = withTimeout(stepBudget.coerceAtLeast(1)) {
                         driver.validate(step)
                         ensureActive()
-                        try { retryUndispatched { driver.execute(step) } }
+                        try { driver.execute(step) }
                         finally { if (step == VisitStep.SUBMIT && !driver.managesSubmissionTiming) lastSubmissionAt = now() }
                     }
                     debug(VisitDebugKind.STEP_DONE, durationMs = stepSince?.let { now() - it })
@@ -112,14 +112,14 @@ class VisitRunner(
                     if (finished) {
                         mutable.value = state.value.copy(
                             status = if (state.value.execution == VisitExecution.STEP_TEST) VisitStatus.FINISH_CONFIRM else VisitStatus.COMPLETED,
-                            message = if (state.value.execution == VisitExecution.STEP_TEST) "本轮测试完成，点击确认结束" else "已完成 $rounds 轮",
+                            message = if (state.value.execution == VisitExecution.STEP_TEST) "本轮测试完成，请核验并结束测试" else "已完成 $rounds 轮",
                         )
                         if (state.value.status == VisitStatus.COMPLETED) notifyCompleted()
                         return@launch
                     }
                     stepBudget = 30_000
                     if (state.value.execution == VisitExecution.STEP_TEST) {
-                        mutable.value = state.value.copy(status = VisitStatus.CHECKPOINT, message = "本步完成，点击继续")
+                        mutable.value = state.value.copy(status = VisitStatus.CHECKPOINT, message = "已自动暂停，请核验本步结果")
                         return@launch
                     }
                     // Yield between steps, so pause/stop and foreground changes can be processed.
@@ -170,20 +170,6 @@ class VisitRunner(
         }
     }
     private fun chargeStep() { stepSince?.let { stepBudget = (stepBudget - (now() - it).coerceAtLeast(0)).coerceAtLeast(0) }; stepSince = null }
-    private suspend fun <T> runDriverStep(operation: suspend () -> T): T = coroutineScope {
-        val start = now()
-        val progress = launch {
-            while (isActive) {
-                driver.waitingMessage?.let { message ->
-                    mutable.value = state.value.copy(message = "$message\n已等待 ${(now() - start).coerceAtLeast(0) / 1_000} 秒，自动继续中")
-                }
-                delay(1_000)
-            }
-        }
-        try {
-            if (driver.waitsForControls) operation() else withTimeout(stepBudget.coerceAtLeast(1)) { operation() }
-        } finally { progress.cancel() }
-    }
     fun pause(reason: String = "用户暂停", error: Boolean = false) {
         if (!state.value.active || state.value.status == VisitStatus.FINISH_CONFIRM) return
         chargeStep(); generation++; worker?.cancel(); worker = null
@@ -207,26 +193,6 @@ class VisitRunner(
         mutable.value = state.value.copy(status = VisitStatus.COMPLETED, message = "本轮测试已确认结束")
         driver.release()
         notifyCompleted()
-    }
-    private suspend fun <T> retryUndispatched(operation: suspend () -> T): T {
-        var rechecks = 0
-        while (true) {
-            try { return operation() } catch (error: VisitReadPending) {
-                if (!driver.waitsForControls) throw error
-                mutable.value = state.value.copy(message = "${error.reason}；恢复后自动继续")
-                delay(300)
-            } catch (error: VisitPreActionMismatch) {
-                // This type guarantees that nothing was sent. Reacquire the
-                // current page, at most twice, within the existing step budget.
-                if (driver.pendingSubmission) throw error
-                if (!driver.waitsForControls && (rechecks++ >= 2 || error.reason !in PRE_ACTION_REFRESH)) throw error
-                if (driver.waitsForControls && error.reason !in PRE_ACTION_REFRESH && error.reason !in DIRECT_WAIT_REASONS) throw error
-                if (driver.waitsForControls) mutable.value = state.value.copy(message = "等待目标控件恢复，自动继续中")
-                debug(VisitDebugKind.RECHECK, reason = error.reason)
-                driver.invalidatePrepared()
-                delay(150)
-            }
-        }
     }
     private fun notifyCompleted() { debug(VisitDebugKind.COMPLETE); runCatching { onCompleted() } }
     private fun debug(kind: VisitDebugKind, reason: String? = null, durationMs: Long? = null, waitMs: Long? = null) {
@@ -252,10 +218,3 @@ class VisitRunner(
         return cleared
     }
 }
-
-private val PRE_ACTION_REFRESH = setOf("执行前页面发生变化，已暂停", "执行前界面不可读", "目标控件已失效",
-    "执行前控件内容已变化", "执行前控件位置或状态已变化", "图像采样已过期，请重新识别",
-    "图像识别期间页面结构变化，已暂停", "图像识别期间按钮移动，已暂停",
-    "图像识别期间目标窗口变化，已暂停")
-private val DIRECT_WAIT_REASONS = setOf("等待目标应用页面恢复", "等待目标控件恢复", "系统未接受走访控件点击，请查看后继续",
-    "图像按钮识别不唯一或置信度不足，已暂停", "当前画面无法用于图像识别，已暂停")
