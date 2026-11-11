@@ -152,7 +152,6 @@ class ClickAccessibilityService : AccessibilityService() {
         if (event != null && event.packageName?.toString() == PrivateModel.TARGET) {
             visitSuccessSignals.observe(PrivateModel.TARGET, PrivateModel.TARGET, event.text.map { it.toString() }, android.os.SystemClock.elapsedRealtime())
         }
-        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) model.privateModel.controller?.foregroundChanged(event.packageName?.toString().orEmpty())
     }
     override fun onTaskRemoved(rootIntent: Intent?) { model.privateModel.clearTask(); super.onTaskRemoved(rootIntent) }
     override fun onInterrupt() { interrupt("无障碍服务被中断，任务已停止") }

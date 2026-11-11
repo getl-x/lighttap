@@ -16,7 +16,7 @@ val releaseStore = signingValue("storeFile", "SIGNING_STORE_FILE")
 android {
     namespace = "cn.lighttap.app"
     compileSdk = 36
-    defaultConfig { applicationId = "cn.lighttap.app"; minSdk = 26; targetSdk = 36; versionCode = 24; versionName = "1.2.20"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    defaultConfig { applicationId = "cn.lighttap.app"; minSdk = 26; targetSdk = 36; versionCode = 25; versionName = "1.2.21"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     signingConfigs {
         if (releaseStore != null) create("personal") {
             storeFile = rootProject.file(releaseStore)

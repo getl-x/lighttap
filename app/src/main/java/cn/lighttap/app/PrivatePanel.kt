@@ -36,14 +36,12 @@ fun PrivatePanel(model: AppModel) {
     val settings by local.settings.collectAsStateWithLifecycle()
     val state by local.state.collectAsStateWithLifecycle()
     val service by model.service.collectAsStateWithLifecycle()
-    LaunchedEffect(settings.recognition, service) {
-        if (settings.recognition == VisitRecognition.IMAGE) local.controller?.warmImageRecognition()
-    }
     val screen by model.screen.collectAsStateWithLifecycle()
     val verified by local.verified.collectAsStateWithLifecycle()
     val probe by local.probeResult.collectAsStateWithLifecycle()
     val storageError by local.storageError.collectAsStateWithLifecycle()
     val saving by local.saving.collectAsStateWithLifecycle()
+    val cacheBusy by local.runtimeCacheBusy.collectAsStateWithLifecycle()
     val history by local.history.collectAsStateWithLifecycle()
     val context = androidx.compose.ui.platform.LocalContext.current
     var revision by remember { mutableIntStateOf(0) }
@@ -58,7 +56,7 @@ fun PrivatePanel(model: AppModel) {
     val notificationsAllowed = remember(revision) { context.getSystemService(NotificationManager::class.java).areNotificationsEnabled() }
     val supported = Build.VERSION.SDK_INT >= 30
     val probing = probe == "正在只读检查，未执行操作"
-    val canArm = service != null && targetInstalled && screen != null && supported && !state.active && !probing && !saving && settings.error() == null && storageError == null
+    val canArm = service != null && targetInstalled && screen != null && supported && !state.active && !probing && !saving && !cacheBusy && settings.error() == null && storageError == null
     var details by rememberSaveable { mutableStateOf(false) }
     var showHistory by rememberSaveable { mutableStateOf(false) }
     val statusColor = when (state.status) {
@@ -71,8 +69,11 @@ fun PrivatePanel(model: AppModel) {
         Column(Modifier.fillMaxSize().padding(insets).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text("专用功能", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text("走访填报 · 蒙政通", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            ToolCard("当前任务 · ${state.rounds} 轮成功") {
+            ToolCard("当前任务 · ${state.rounds} 轮") {
                 Text(state.message, color = statusColor, style = MaterialTheme.typography.titleMedium)
+                OutlinedButton(onClick = { local.controller?.clearRuntimeCache() }, enabled = service != null && !cacheBusy,
+                    modifier = Modifier.fillMaxWidth()) { Text(if (cacheBusy) "正在清理运行缓存…" else "清理运行缓存") }
+                Text("停止当前任务并清除运行步骤、待处理状态和识图缓存；配置、方案与提交间隔保留。清理后从待办列表重新开始。", style = MaterialTheme.typography.bodySmall)
                 if (state.pendingSubmission) Text("等待结果确认：只核对上次结果，不会再次提交。", color = MaterialTheme.colorScheme.error)
                 if (state.step == VisitStep.SUBMIT && state.remainingWaitMs > 0 && state.active) Text("提交间隔剩余 ${countdown(state.remainingWaitMs)}", color = statusColor, style = MaterialTheme.typography.headlineSmall)
                 if (state.active) {
@@ -98,16 +99,16 @@ fun PrivatePanel(model: AppModel) {
                         Text(recognition.title, Modifier.padding(start = 8.dp))
                     }
                 }
-                Text("图像备用通过本机截图识字定位按钮；文字输入和记录核对使用系统接口。模型已内置，不联网，截图仅在内存处理。", style = MaterialTheme.typography.bodySmall)
+                Text("读取当前按钮和输入框后直接执行。图像备用仅在本机识字定位按钮，模型已内置，不联网。", style = MaterialTheme.typography.bodySmall)
                 Text("两种方式分别完成逐步测试后才能正式运行。切换前先停止当前任务；不会因一次失败自动换方式或重复提交。", style = MaterialTheme.typography.bodySmall)
             }
             ToolCard("开始前检查") {
                 ReadinessRow("点击服务", service != null)
                 ReadinessRow("目标应用已安装", targetInstalled)
                 ReadinessRow("屏幕参数可读", screen != null)
-                ReadinessRow("画面核验能力 · Android 11 及以上", supported)
+                ReadinessRow("设备支持 · Android 11 及以上", supported)
                 Text(if (verified) "当前识别方式的逐步测试已确认，可正式运行" else "当前识别方式尚未确认逐步测试，正式运行暂不可用", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("每一步按当前页面重新识别，兼容常规布局和控件层级变化；字段含义或流程改变、无法唯一核验时暂停。", style = MaterialTheme.typography.bodySmall)
+                Text("不再核对记录身份、整页一致性或选中样式。通知、弹窗和暂时不可读时自动等待；控件恢复后继续。", style = MaterialTheme.typography.bodySmall)
                 if (service == null) OutlinedButton(onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("开启点击服务") }
             }
             ToolCard("运行参数") {
@@ -117,13 +118,13 @@ fun PrivatePanel(model: AppModel) {
                         Text(when (mode) { VisitRunMode.ONCE -> "执行一次"; VisitRunMode.COUNT -> "指定轮数"; VisitRunMode.CONTINUOUS -> "持续运行，直到手动停止" }, Modifier.padding(start = 8.dp))
                     }
                 }
-                if (settings.mode == VisitRunMode.COUNT) OutlinedTextField(value = settings.countText, onValueChange = { value -> local.edit { it.copy(countText = value) } }, label = { Text("成功轮数") }, enabled = !state.active, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = settings.waitText, onValueChange = { value -> local.edit { it.copy(waitText = value) } }, label = { Text("两次提交最小间隔（秒）") }, enabled = !state.active, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), supportingText = { Text("默认 61 秒，含 1 秒余量；范围 61～86400。填写和核验计入间隔，提交前只补足剩余时间。") }, modifier = Modifier.fillMaxWidth(), isError = settings.error() != null)
+                if (settings.mode == VisitRunMode.COUNT) OutlinedTextField(value = settings.countText, onValueChange = { value -> local.edit { it.copy(countText = value) } }, label = { Text("运行轮数") }, enabled = !state.active, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = settings.waitText, onValueChange = { value -> local.edit { it.copy(waitText = value) } }, label = { Text("两次提交最小间隔（秒）") }, enabled = !state.active, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), supportingText = { Text("默认 61 秒，含 1 秒余量；范围 61～86400。填写和等待控件计入间隔，提交前只补足剩余时间。") }, modifier = Modifier.fillMaxWidth(), isError = settings.error() != null)
                 settings.error()?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-                TextButton(onClick = { details = !details }) { Text(if (details) "收起运行说明" else "查看计时与核验规则") }
+                TextButton(onClick = { details = !details }) { Text(if (details) "收起运行说明" else "查看计时与运行规则") }
                 if (details) {
-                    Text("通常从上次有效提交点击计时；若提交后出现加载，则从加载结束、正常待办页恢复并确认成功后的首个有效时刻计时。加载中的表单或灰色遮罩都不启动间隔；未确认结果前禁止再次提交。暂停期间间隔继续计时。", style = MaterialTheme.typography.bodySmall)
-                    Text("状态画面只在内存中核验，不保存、不上传。界面必须完整可读并严格匹配，任何不确定都会暂停。", style = MaterialTheme.typography.bodySmall)
+                    Text("提交后读取到待办页即可继续，不再等待白底、原记录移除或两次列表一致。间隔从读到待办页的时刻计算，填写和等待控件的时间计入间隔。未返回前不会重复提交，暂停期间间隔继续计时。", style = MaterialTheme.typography.bodySmall)
+                    Text("轮数统计提交后返回待办页的次数。通知或弹窗造成暂时不可读时，任务自动等待恢复。", style = MaterialTheme.typography.bodySmall)
                     Text("检查地址：松州园小区\n走访描述：无异常\n已有其他内容或状态异常时停止，不覆盖。", style = MaterialTheme.typography.bodySmall)
                 }
             }
@@ -138,7 +139,7 @@ fun PrivatePanel(model: AppModel) {
                 }) { Text("管理提醒通知") }
             }
             ToolCard("检查与运行记录") {
-                Text("执行步骤时详情自动收起；点击、输入和画面核验前会临时避让悬浮内容，暂停后恢复详情。", style = MaterialTheme.typography.bodySmall)
+                Text("执行步骤时详情自动收起；点击和输入前临时避让悬浮内容，等待时显示原因与时长。", style = MaterialTheme.typography.bodySmall)
                 Text("只读检查：$probe", style = MaterialTheme.typography.bodySmall)
                 Text("已执行：${state.lastStep}\n本步结果：${state.result.ifBlank { "尚无" }}", style = MaterialTheme.typography.bodySmall)
                 TextButton(onClick = { showHistory = !showHistory }) { Text(if (showHistory) "收起近期记录" else "近期记录 · ${history.size}") }

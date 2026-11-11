@@ -51,7 +51,6 @@ internal class AndroidImageRecognition(private val service: AccessibilityService
         val ocr = ensureEngine()
         currentCoroutineContext().ensureActive()
         val (bitmap, capturedAt) = screenshot()
-        val pixels = IntArray(bitmap.width * bitmap.height)
         try {
             val region = imageOcrRegion(button.bounds, bitmap.width, bitmap.height)
             val crop = Bitmap.createBitmap(bitmap, region.left, region.top, region.right - region.left, region.bottom - region.top)
@@ -67,46 +66,11 @@ internal class AndroidImageRecognition(private val service: AccessibilityService
                     region.top + ceil(item.box.points.maxOf { it.y }).toInt()))
             }
             val box = ImageClickLocator.locate(lines, if (navigation) "走访" else "提交", button.bounds, bitmap.width, bitmap.height)
-            bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-            val listClear = if (navigation) clearList(tree, pixels, bitmap.width, bitmap.height) else false
-            val normal = if (!navigation) {
-                val contract = VisitContract(tree.packageName)
-                // Preserve the existing state contract: an explicit selected
-                // normal node is authoritative; pixels are required only when
-                // the page does not expose a selection state. An explicit
-                // abnormal state can never be overridden by an image result.
-                when (contract.normalState(tree)) {
-                    ChoiceResult.NORMAL -> true
-                    ChoiceResult.ABNORMAL -> false
-                    ChoiceResult.UNKNOWN -> {
-                        val frame = ChoiceFrame(0, 0, bitmap.width, bitmap.height, pixels)
-                        OpenCvChoiceBackend.classify(frame, contract.choiceButton(tree, "正常").bounds,
-                            contract.choiceButton(tree, "异常").bounds) == ChoiceResult.NORMAL
-                    }
-                }
-            } else false
-            ImageClickEvidence(box, capturedAt, bitmap.width, bitmap.height, listClear, normal)
+            ImageClickEvidence(box, capturedAt, bitmap.width, bitmap.height, true, true)
         } finally {
-            pixels.fill(0)
             bitmap.eraseColor(android.graphics.Color.TRANSPARENT)
             bitmap.recycle()
         }
-    }
-
-    private fun clearList(tree: UiTree, pixels: IntArray, width: Int, height: Int): Boolean {
-        val tab = tree.exact("待办", true).singleOrNull() ?: return false
-        val left = (width * .04).toInt(); val right = (width * .96).toInt()
-        val top = maxOf(tab.bounds.bottom + 8, (height * .26).toInt()); val bottom = (height * .90).toInt()
-        if (left >= right || top >= bottom) return false
-        val sample = IntArray(72 * 96)
-        try {
-            for (y in 0 until 96) for (x in 0 until 72) {
-                val sx = left + x * (right - left) / 72
-                val sy = top + y * (bottom - top) / 96
-                sample[y * 72 + x] = pixels[sy * width + sx]
-            }
-            return classifyReturnPixels(sample, 72, 96) == ReturnVisual.CLEAR
-        } finally { sample.fill(0) }
     }
 
     private suspend fun screenshot(): Pair<Bitmap, Long> = screenshotWithin(2_500) { VisitScreenshots.capture(service) {
@@ -145,6 +109,7 @@ internal class AndroidImageRecognition(private val service: AccessibilityService
     } }
 
     suspend fun close() = mutex.withLock { closed = true; engine?.release(); engine = null }
+    suspend fun clearRuntime() = withContext(Dispatchers.IO) { mutex.withLock { engine?.release(); engine = null } }
 }
 
 internal class AndroidImageVisitUiAccess(
@@ -156,7 +121,6 @@ internal class AndroidImageVisitUiAccess(
         private set
     private val ocr = AndroidImageRecognition(service)
     private var prepared: PreparedImageClick? = null
-    private val clickGuard = ImageClickGuard(target)
     private val flow = ImageClickFlow(native, { tree, node, navigation ->
         val start = SystemClock.elapsedRealtime()
         try {
@@ -175,9 +139,8 @@ internal class AndroidImageVisitUiAccess(
         val plan = prepared ?: return false
         if (plan.consumed) return false
         return try {
-            val current = clickGuard.reacquire(plan.request, plan.requestedNode, tree, false)
-            ImageClickLocator.validate(plan.evidence, current.bounds, false, SystemClock.elapsedRealtime())
-            current == node
+            ImageClickLocator.validate(plan.evidence, node.bounds, false, SystemClock.elapsedRealtime())
+            true
         } catch (_: VisitMismatch) { false }
     }
     override suspend fun prepareSubmit(tree: UiTree, node: UiNode) {
@@ -193,12 +156,9 @@ internal class AndroidImageVisitUiAccess(
             prepared = null
             lastClickDispatchMs = null
             val screen = try {
-                if (plan == null || clickGuard.reacquire(plan.request, plan.requestedNode, tree, false) != node)
-                    throw VisitMismatch("图像提交准备已失效，请重新核验")
                 tree.nodes.first().bounds
             } catch (error: VisitMismatch) { throw VisitPreActionMismatch(error.reason) }
-            checkNotNull(plan)
-            surface.clear(listOf(screen)) { flow.dispatch(plan) }
+            surface.clear(listOf(screen)) { if (plan == null) flow.click(tree, node, false) else flow.dispatch(plan) }
         }
         else surface.clear(listOf(node.bounds)) { native.perform(tree, node, action, value) }
     }
@@ -210,11 +170,13 @@ internal class AndroidImageVisitUiAccess(
     }
     suspend fun probe() {
         val tree = native.capture()
-        val contract = VisitContract(target)
         val navigation = !tree.has("新增")
-        val node = if (navigation) tree.node(contract.top(tree).actionPath) else contract.submit(tree)
+        val node = DirectVisitControls.button(tree, if (navigation) "走访" else "提交") ?: throw VisitReadPending("等待目标控件显示")
         val screen = tree.nodes.firstOrNull()?.bounds ?: throw VisitMismatch("无法读取当前界面")
-        surface.clear(listOf(screen)) { ocr.read(tree, node, navigation) }
+        // Readable native labels already provide the target; watermark pixels
+        // do not need to be classified or recognized again.
+        if (tree.under(node.path).none { canonicalLabel(it.readableText) == if (navigation) "走访" else "提交" })
+            surface.clear(listOf(screen)) { ocr.read(tree, node, navigation) }
     }
     private suspend fun tap(tree: UiTree, box: UiBox) {
         if (service.getSystemService(KeyguardManager::class.java).isKeyguardLocked ||
@@ -222,8 +184,7 @@ internal class AndroidImageVisitUiAccess(
         @Suppress("DEPRECATION")
         val root = service.rootInActiveWindow ?: throw VisitPreActionMismatch("执行前界面不可读")
         try {
-            if (root.packageName?.toString() != target || root.windowId != tree.windowId)
-                throw VisitPreActionMismatch("执行前目标窗口已变化")
+            if (root.packageName?.toString() != target) throw VisitPreActionMismatch("等待目标应用页面恢复")
         } finally { @Suppress("DEPRECATION") root.recycle() }
         currentCoroutineContext().ensureActive()
         val complete = withTimeoutOrNull(2_000) {
@@ -244,5 +205,6 @@ internal class AndroidImageVisitUiAccess(
         if (!complete) throw VisitMismatch("本次点击未确认完成，已暂停且不会自动重试")
     }
     suspend fun close() { prepared = null; ocr.close() }
+    suspend fun clearRuntime() { prepared = null; ocr.clearRuntime() }
     suspend fun warmUp() = ocr.warmUp()
 }

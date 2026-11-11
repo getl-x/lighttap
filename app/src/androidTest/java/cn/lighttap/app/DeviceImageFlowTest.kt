@@ -74,8 +74,7 @@ class DeviceImageFlowTest {
             override fun mark(hash: String, target: String): Boolean { this.hash = hash; this.target = target; return true }
             override fun clear(): Boolean { hash = null; target = null; return true }
         }
-        val driver = AndroidVisitDriver(bridge, AndroidChoiceVision(service), fence,
-            AndroidReturnVision(service), { SystemClock.elapsedRealtime() })
+        val driver = AndroidVisitDriver(bridge, fence, { SystemClock.elapsedRealtime() })
         val runner = VisitRunner(scope, driver, { SystemClock.elapsedRealtime() })
         var navigationClicks = 0; var submissions = 0
         var address: EditText? = null; var description: EditText? = null

@@ -52,7 +52,7 @@ class AndroidUiBridge(private val service: AccessibilityService, override val ta
         try {
             if (Build.VERSION.SDK_INT < 33 && !root.refresh()) throw VisitReadPending("当前窗口快照已失效")
             val pkg = root.packageName?.toString().orEmpty()
-            if (pkg != target) throw VisitMismatch("当前前台不是已绑定的目标应用")
+            if (pkg != target) throw VisitReadPending("等待目标应用页面恢复")
             val nodes = mutableListOf<UiNode>()
             val job = currentCoroutineContext()
             fun walk(node: AccessibilityNodeInfo, path: String, depth: Int) {
@@ -77,65 +77,62 @@ class AndroidUiBridge(private val service: AccessibilityService, override val ta
     private suspend fun performFresh(tree: UiTree, node: UiNode, action: Int, value: String?, navigation: Boolean) = withContext(reader) {
         var dispatched = false
         try {
-        guard()
-        val fresh = captureFresh()
-        if (!sameVisitPage(tree, fresh)) throw VisitMismatch("执行前页面发生变化，已暂停")
-        if (!node.visible || !node.enabled || !node.bounds.nonEmpty) throw VisitMismatch("目标控件不可操作")
-        val panel = withContext(Dispatchers.Main.immediate) { overlayBounds() }
-        val notice = withContext(Dispatchers.Main.immediate) {
-            (service as? ClickAccessibilityService)?.appModel?.privateModel?.controller?.workReminderBounds()
-        }
-        if (action != AccessibilityNodeInfo.ACTION_SCROLL_FORWARD && (panel?.intersects(node.bounds) == true || notice?.intersects(node.bounds) == true)) throw VisitMismatch("悬浮内容遮挡目标控件，请移开或收起后继续")
-        var current = service.rootInActiveWindow ?: throw VisitMismatch("执行前界面不可读")
-        try {
-            if (current.packageName?.toString() != target || current.windowId != tree.windowId) throw VisitMismatch("执行前目标窗口已变化")
-            val indices = node.path.split('/').drop(1).map { it.toInt() }
-            for (index in indices) {
-                val child = current.getChild(index) ?: throw VisitMismatch("目标控件已失效")
-                current.recycle(); current = child
-            }
-            if (current.text?.toString().orEmpty() != node.text || current.contentDescription?.toString().orEmpty() != node.description || current.viewIdResourceName.orEmpty() != node.viewId || current.isEditable != node.editable) throw VisitMismatch("执行前控件内容已变化")
-            val bounds = Rect().also { current.getBoundsInScreen(it) }
-            if (!current.isVisibleToUser || !current.isEnabled || UiBox(bounds.left, bounds.top, bounds.right, bounds.bottom) != node.bounds) throw VisitMismatch("执行前控件位置或状态已变化")
-            currentCoroutineContext().ensureActive()
-            val args = value?.let { Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, it) } }
-            if (action == AccessibilityNodeInfo.ACTION_CLICK) {
-                dispatched = true
-                dispatchVisitClick(navigation, { current.performAction(AccessibilityNodeInfo.ACTION_CLICK) }) {
-                    // Touch the fresh, exactly matched node bounds; never use preset coordinates
-                    // and never retry an accepted action with another action type.
-                    val x = (node.bounds.left + node.bounds.right) / 2f
-                    val y = (node.bounds.top + node.bounds.bottom) / 2f
-                    val completed = withTimeoutOrNull(2_000) {
-                        suspendCancellableCoroutine<Boolean> { continuation ->
-                            val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(x, y) }, 0, 50)).build()
-                            val callback = object : AccessibilityService.GestureResultCallback() {
-                                override fun onCompleted(gestureDescription: GestureDescription?) { if (continuation.isActive) continuation.resume(true) }
-                                override fun onCancelled(gestureDescription: GestureDescription?) { if (continuation.isActive) continuation.resume(false) }
-                            }
-                            val dispatchedAt = SystemClock.elapsedRealtime()
-                            val accepted = service.dispatchGesture(gesture, callback, null)
-                            lastClickDispatchMs = if (accepted) dispatchedAt else null
-                            if (!accepted && continuation.isActive) continuation.resume(false)
-                        }
-                    } ?: false
-                    if (!completed) throw VisitMismatch("本次点击未确认完成，已暂停且不会自动重试")
+            guard()
+            var current = service.rootInActiveWindow ?: throw VisitPreActionMismatch("等待目标应用页面恢复")
+            try {
+                if (current.packageName?.toString() != target) throw VisitPreActionMismatch("等待目标应用页面恢复")
+                for (index in node.path.split('/').drop(1).map { it.toInt() }) {
+                    val child = current.getChild(index) ?: throw VisitPreActionMismatch("等待目标控件恢复")
+                    current.recycle(); current = child
                 }
-            } else {
-                dispatched = true
-                if (!current.performAction(action, args)) throw VisitMismatch("系统未确认本次控件操作，已暂停")
-            }
-        } finally { current.recycle() }
-        } catch (e: VisitMismatch) {
-            if (!dispatched) throw VisitPreActionMismatch(e.reason)
-            throw e
+                val rect = Rect().also { current.getBoundsInScreen(it) }
+                if (!current.isVisibleToUser || !current.isEnabled || rect.isEmpty ||
+                    action == AccessibilityNodeInfo.ACTION_SET_TEXT && !current.isEditable)
+                    throw VisitPreActionMismatch("等待目标控件恢复")
+                currentCoroutineContext().ensureActive()
+                if (action == AccessibilityNodeInfo.ACTION_CLICK) {
+                    dispatchVisitClick(navigation, {
+                        val accepted = current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        if (accepted) dispatched = true
+                        accepted
+                    }) {
+                        val complete = withTimeoutOrNull(2_000) {
+                            suspendCancellableCoroutine<Boolean> { continuation ->
+                                val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(
+                                    Path().apply { moveTo(rect.exactCenterX(), rect.exactCenterY()) }, 0, 50)).build()
+                                val callback = object : AccessibilityService.GestureResultCallback() {
+                                    override fun onCompleted(gestureDescription: GestureDescription?) { if (continuation.isActive) continuation.resume(true) }
+                                    override fun onCancelled(gestureDescription: GestureDescription?) { if (continuation.isActive) continuation.resume(false) }
+                                }
+                                val at = SystemClock.elapsedRealtime()
+                                val accepted = service.dispatchGesture(gesture, callback, null)
+                                dispatched = accepted
+                                lastClickDispatchMs = if (accepted) at else null
+                                if (!accepted && continuation.isActive) continuation.resume(false)
+                            }
+                        } ?: false
+                        if (!complete) {
+                            if (!dispatched) throw VisitPreActionMismatch("等待目标控件恢复")
+                            throw VisitMismatch("本次点击未确认完成，已暂停且不会自动重试")
+                        }
+                    }
+                } else {
+                    val args = value?.let { Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, it) } }
+                    if (!current.performAction(action, args)) throw VisitPreActionMismatch("等待目标控件恢复")
+                    dispatched = true
+                }
+            } finally { current.recycle() }
+        } catch (error: VisitMismatch) {
+            if (!dispatched) throw VisitPreActionMismatch(error.reason)
+            throw error
         }
     }
+
 }
 
 /** Never fall back after an accepted click, especially not for submission. */
 internal suspend fun dispatchVisitClick(navigation: Boolean, nodeClick: () -> Boolean, gesture: suspend () -> Unit) {
     if (navigation) {
-        if (!nodeClick()) throw VisitNavigationRejected()
+        if (!nodeClick()) gesture()
     } else gesture()
 }

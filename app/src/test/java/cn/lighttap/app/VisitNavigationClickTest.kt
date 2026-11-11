@@ -10,11 +10,10 @@ class VisitNavigationClickTest {
         dispatchVisitClick(true, { nodes++; true }, { gestures++ })
         assertEquals(1, nodes); assertEquals(0, gestures)
     }
-    @Test fun rejectedNavigationDoesNotSilentlyFallBackToAnotherClick() = runTest {
+    @Test fun unreadableNativeActionUsesOneGestureWhenNoClickWasAccepted() = runTest {
         var nodes = 0; var gestures = 0
-        try { dispatchVisitClick(true, { nodes++; false }, { gestures++ }); fail("Must report rejection") }
-        catch (_: VisitNavigationRejected) { }
-        assertEquals(1, nodes); assertEquals(0, gestures)
+        dispatchVisitClick(true, { nodes++; false }, { gestures++ })
+        assertEquals(1, nodes); assertEquals(1, gestures)
     }
     @Test fun submissionKeepsExactlyOneGestureWithoutNodeAction() = runTest {
         var nodes = 0; var gestures = 0

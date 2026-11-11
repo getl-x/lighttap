@@ -83,8 +83,7 @@ class VisitLongRunRecoveryTest {
                 }
             }
         }
-        val driver = AndroidVisitDriver(bridge, VisitChoiceVerifier { _, _ -> fail("Explicit normal needs no fallback") }, fence,
-            VisitReturnVision { ReturnFrame(if (replyAt != null) ReturnVisual.BLOCKED else ReturnVisual.CLEAR, now()) }, now)
+        val driver = AndroidVisitDriver(bridge, fence, now)
         val runner = VisitRunner(backgroundScope, driver, now)
         runner.start(VisitSettings(targetPackage = "fixture", mode = VisitRunMode.COUNT, countText = count.toString()), VisitExecution.FORMAL)
         var recoveries = 0
