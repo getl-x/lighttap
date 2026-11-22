@@ -17,7 +17,7 @@ val testVersion = providers.gradleProperty("lighttapTestVersion").orNull
 android {
     namespace = "cn.lighttap.app"
     compileSdk = 36
-    defaultConfig { applicationId = "cn.lighttap.app"; minSdk = 26; targetSdk = 36; versionCode = 29; versionName = "1.2.23-beta.2"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    defaultConfig { applicationId = "cn.lighttap.app"; minSdk = 26; targetSdk = 36; versionCode = 30; versionName = "1.2.23"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     signingConfigs {
         if (releaseStore != null) create("personal") {
             storeFile = rootProject.file(releaseStore)
