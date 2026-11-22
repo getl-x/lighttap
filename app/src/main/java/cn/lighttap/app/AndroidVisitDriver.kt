@@ -9,6 +9,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 
 internal const val VISIT_BUTTONS_MISSING = "未识别到同一行的走访记录和走访按钮"
+private const val PENDING_LIST_POLL_MS = 1_000L
+private const val PENDING_EMPTY_CONFIRM_MS = 5_000L
+private const val PENDING_LIST_RECHECK_MS = 12_000L
 
 interface VisitSubmissionFence {
     val hash: String?
@@ -160,13 +163,11 @@ class AndroidVisitDriver internal constructor(
         VisitStep.FIND_LIST -> {
             retryOpening = false
             if (pendingSubmission) throw VisitMismatch("仍有未确认提交，禁止开始下一轮")
-            val tree = observations.read()
-            val empty = contract.emptyPendingList(tree)
-            if (!empty && !hasVisitButtons(tree)) throw VisitMismatch(VISIT_BUTTONS_MISSING)
+            val empty = pendingListEmpty(observations.read())
             diagnostics.record(VisitDebugEvent(VisitDebugKind.LIST, step = step, records = if (empty) 0 else null, ok = true))
             formIdentity = null
             scrolls = 0
-            VisitEffect(message = if (empty) "待办已处理完" else "已识别走访记录和走访按钮", emptyList = empty)
+            VisitEffect(message = if (empty) "已复核，待办暂未显示记录" else "已识别走访记录和走访按钮", emptyList = empty)
         }
         VisitStep.OPEN_FORM -> {
             val tree = observations.read()
@@ -356,6 +357,38 @@ class AndroidVisitDriver internal constructor(
     private suspend fun hasVisitButtons(tree: UiTree): Boolean =
         contract.visitButton(tree) != null || bridge.findVisitImage(tree) != null
 
+    private suspend fun pendingListEmpty(initial: UiTree): Boolean {
+        // A button pair or image can be visible before WebView exposes the tabs.
+        if (!contract.pendingListSelected(initial)) {
+            if (hasVisitButtons(initial)) return false
+            throw VisitMismatch(VISIT_BUTTONS_MISSING)
+        }
+        val started = now()
+        var tree: UiTree? = initial
+        var emptySince: Pair<Int, Long>? = null
+        var attempts = 0
+        // A WebView can publish its empty placeholder before the pending rows.
+        while (now() - started < PENDING_LIST_RECHECK_MS) {
+            attempts++
+            val page = tree
+            if (page != null && contract.emptyPendingList(page)) {
+                val at = now()
+                val since = emptySince?.takeIf { it.first == page.windowId }?.second ?: at
+                emptySince = page.windowId to since
+                if (at - since >= PENDING_EMPTY_CONFIRM_MS) return bridge.findVisitImage(page) == null
+                diagnostics.record(VisitDebugEvent(VisitDebugKind.LIST, step = VisitStep.FIND_LIST,
+                    attempt = attempts, durationMs = at - since, waitMs = PENDING_EMPTY_CONFIRM_MS, ok = false,
+                    reason = "检测到待办空状态，等待复核"))
+            } else {
+                emptySince = null
+                if (page != null && contract.pendingListSelected(page) && !contract.loading(page) && hasVisitButtons(page)) return false
+            }
+            delay(PENDING_LIST_POLL_MS)
+            tree = try { bridge.capture() } catch (_: VisitReadPending) { null }
+        }
+        throw VisitMismatch("待办列表仍在刷新或无法确认，请刷新后继续")
+    }
+
     private suspend fun openVisitControl(tree: UiTree, button: UiNode) {
         try { bridge.openVisit(tree, button) }
         catch (rejected: VisitNavigationRejected) {
@@ -379,7 +412,9 @@ class AndroidVisitDriver internal constructor(
             val started = now()
             returnChecks++
             val tree = try { bridge.capture() } catch (_: VisitReadPending) { null }
-            val ready = tree != null && (contract.emptyPendingList(tree) || hasVisitButtons(tree))
+            // The empty placeholder can establish that navigation returned to pending.
+            // FIND_LIST independently checks whether the rows have finished publishing.
+            val ready = tree != null && !contract.loading(tree) && (contract.emptyPendingList(tree) || hasVisitButtons(tree))
             diagnostics.record(VisitDebugEvent(VisitDebugKind.RETURN_CHECK, step = VisitStep.WAIT_LIST, attempt = returnChecks,
                 pending = true, durationMs = now() - started, normal = ready, ok = ready,
                 reason = if (ready) null else VISIT_BUTTONS_MISSING))
@@ -416,8 +451,7 @@ class AndroidVisitDriver internal constructor(
         prepareUi()
         val tree = observations.read()
         if (tree.has("新增")) { verifyNormal(stable(tree)); return "表单控件可读；未填写、未提交" }
-        if (contract.emptyPendingList(tree)) return "待办为空；未点击"
-        if (!hasVisitButtons(tree)) throw VisitMismatch(VISIT_BUTTONS_MISSING)
+        if (pendingListEmpty(tree)) return "待办为空；未点击"
         return "走访记录和走访按钮可读；未点击"
     }
     override fun release() { invalidatePrepared(); formIdentity = null; lastReturnedRecord = null; returnedToList = false; scrolls = 0; opening = false; openingAt = null; retryOpening = false }

@@ -91,8 +91,17 @@ class VisitRunner(
                     chargeStep()
                     ensureActive()
                     if (token != generation) return@launch
+                    val limit = settings.limit(state.value.execution)
                     if (effect.emptyList) {
                         if (step != VisitStep.FIND_LIST || driver.pendingSubmission) throw VisitMismatch("空列表结束条件不匹配")
+                        if (state.value.execution == VisitExecution.FORMAL && settings.mode == VisitRunMode.COUNT &&
+                            limit != null && state.value.rounds < limit) {
+                            mutable.value = state.value.copy(status = VisitStatus.PAUSED, lastStep = step.title, result = effect.message,
+                                message = "待办暂未显示记录（${state.value.rounds}/$limit 轮），刷新后继续", remainingWaitMs = 0)
+                            stepBudget = 30_000
+                            debug(VisitDebugKind.PAUSE, reason = "待办暂未显示记录，未达到指定轮数")
+                            return@launch
+                        }
                         mutable.value = state.value.copy(status = VisitStatus.COMPLETED, lastStep = step.title, result = effect.message,
                             message = "待办已处理完", pendingSubmission = false, remainingWaitMs = 0)
                         driver.release()
@@ -102,7 +111,6 @@ class VisitRunner(
                     val next = nextStep(step, effect.repeat)
                     var rounds = state.value.rounds
                     if (step == VisitStep.WAIT_LIST && !effect.repeat) rounds++
-                    val limit = settings.limit(state.value.execution)
                     val finished = step == VisitStep.WAIT_LIST && !effect.repeat && limit != null && rounds >= limit
                     mutable.value = state.value.copy(
                         rounds = rounds, lastStep = step.title, result = effect.message,

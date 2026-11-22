@@ -566,11 +566,50 @@ class AndroidVisitDriverTest {
         val runner = VisitRunner(backgroundScope, driver, { testScheduler.currentTime }, onTestConfirmed = { certified = true })
         runner.start(plan, VisitExecution.STEP_TEST)
         advanceTimeBy(2_000); runCurrent()
+        assertEquals(VisitStatus.RUNNING, runner.state.value.status)
+        advanceTimeBy(4_000); runCurrent()
         assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
         assertEquals("待办已处理完", runner.state.value.message)
         assertEquals(0L, runner.state.value.rounds)
         assertTrue(ui.actions.isEmpty()); assertFalse(certified)
     }
+
+    @Test fun emptyListBeforeCountLimitPausesAndKeepsProgressWhenResumed() = runTest {
+        val now = { testScheduler.currentTime }
+        val ui = Ui(now)
+        val events = mutableListOf<VisitDebugEvent>()
+        val diagnostics = VisitDiagnostics { events += it }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, Fence(now), now, diagnostics)
+        var completions = 0
+        val runner = VisitRunner(backgroundScope, driver, now, onCompleted = { completions++ }, diagnostics = diagnostics)
+        runner.start(plan.copy(mode = VisitRunMode.COUNT, countText = "2"), VisitExecution.FORMAL)
+        advanceTimeBy(7_000); runCurrent()
+
+        assertEquals(VisitStatus.PAUSED, runner.state.value.status)
+        assertEquals(VisitStep.FIND_LIST, runner.state.value.step)
+        assertEquals(1L, runner.state.value.rounds)
+        assertTrue(runner.state.value.message.contains("1/2 轮"))
+        assertFalse(driver.pendingSubmission)
+        assertEquals(0, completions)
+        assertTrue(events.any { it.kind == VisitDebugKind.LIST && it.reason == "检测到待办空状态，等待复核" })
+        assertFalse(events.any { it.kind == VisitDebugKind.COMPLETE })
+
+        ui.submitted = false
+        ui.opened = false
+        ui.listOverride = listTree().let { tree ->
+            tree.copy(nodes = tree.nodes.map { if (it.path == "r/2/0") it.copy(text = "样例乙") else it })
+        }
+        ui.form = formTree().let { tree ->
+            tree.copy(nodes = tree.nodes.map { if (it.path == "r/2/1") it.copy(text = "样例乙") else it })
+        }
+        runner.resume()
+        advanceTimeBy(65_000); runCurrent()
+        assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
+        assertEquals(2L, runner.state.value.rounds)
+        assertEquals(2, ui.actions.count { it == "提交" })
+        assertEquals(1, completions)
+    }
+
     @Test fun emptyHintOnFormDoesNotFinishAsAnEmptyList() = runTest {
         val ui = Ui { testScheduler.currentTime }.apply {
             listOverride = formTree().let { tree -> tree.copy(nodes = tree.nodes + UiNode("r/empty", text = "暂无待办")) }

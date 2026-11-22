@@ -127,6 +127,7 @@ fun PrivatePanel(model: AppModel) {
                 TextButton(onClick = { details = !details }) { Text(if (details) "收起运行说明" else "查看计时与核验规则") }
                 if (details) {
                     Text("提交后，从首次识别到待办页按钮或空列表提示开始计时。等待返回期间禁止再次提交，暂停期间计时继续。", style = MaterialTheme.typography.bodySmall)
+                    Text("待办显示为空时会先复核。指定轮数未完成时会保留进度并暂停，刷新待办后可继续。", style = MaterialTheme.typography.bodySmall)
                     Text("状态画面只在内存中核验，不保存、不上传。界面必须完整可读并严格匹配，任何不确定都会暂停。", style = MaterialTheme.typography.bodySmall)
                     Text("检查地址：松州园小区\n走访描述：无异常\n已有其他内容或状态异常时停止，不覆盖。", style = MaterialTheme.typography.bodySmall)
                 }

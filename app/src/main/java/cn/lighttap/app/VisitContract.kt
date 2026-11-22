@@ -129,11 +129,18 @@ class VisitContract(val target: String) {
         }.distinct()
         return topVisitPair(history, visits, UiNode::bounds)?.second
     }
-    fun emptyPendingList(tree: UiTree): Boolean {
+    internal fun pendingListSelected(tree: UiTree): Boolean {
         target(tree)
-        return tree.has("待办") && !tree.has("新增") && tree.exact("走访", true).isEmpty() &&
-            tree.nodes.any { it.visible && it.readableText.trim() in setOf("暂无数据", "暂无待办", "暂无待办记录") }
+        if (tree.has("新增")) return false
+        val pending = tree.exact("待办", true).singleOrNull() ?: return false
+        return tree.controlAncestors(pending, setOf("待办", "已完成")).any { it.selected || it.checked }
     }
+    fun emptyPendingList(tree: UiTree): Boolean =
+        pendingListSelected(tree) && !loading(tree) &&
+            tree.exact("走访", true).isEmpty() && tree.exact("走访记录", true).isEmpty() &&
+            tree.nodes.any { it.visible && !it.editable && it.readableText.trim() in emptyPendingLabels }
+
+    private val emptyPendingLabels = setOf("暂无数据", "暂无待办", "暂无待办记录")
     private fun leafTexts(tree: UiTree, path: String): List<UiNode> = tree.under(path).filter { n -> n.readableText.isNotBlank() && !n.editable && tree.nodes.none { it.path.startsWith(n.path + "/") && it.readableText.trim() == n.readableText.trim() } }
     private fun isLabel(text: String, label: String): Boolean = undecoratedLabel(text) == label
     private fun labels(tree: UiTree, label: String): List<UiNode> {
@@ -242,7 +249,7 @@ class VisitContract(val target: String) {
         if (loading(tree)) throw VisitMismatch("列表仍在加载，请稍后由用户继续")
         val actions = tree.exact("走访", true)
         if (actions.isEmpty()) {
-            if (tree.nodes.any { it.visible && it.readableText.trim() in setOf("暂无数据", "暂无待办", "暂无待办记录") }) return emptyList()
+            if (emptyPendingList(tree)) return emptyList()
             throw VisitMismatch("未读到走访控件，无法可靠识别网页内容")
         }
         val result = actions.map { action ->

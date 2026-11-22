@@ -9,7 +9,7 @@ import org.junit.Test
  * runner together under slow/partial reads, loading and rejected dispatch. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class VisitLongRunRecoveryTest {
-    @Test fun sixtyRoundsSurviveMixedSlowReadsLoadingAndExplicitRecoveryWithoutDuplicates() = runTest {
+    @Test fun sixtyRoundsSurviveTemporaryEmptyListSlowReadsAndExplicitRecoveryWithoutDuplicates() = runTest {
         val count = 60
         val now = { testScheduler.currentTime }
         val screen = UiBox(0, 0, 720, 1600)
@@ -18,6 +18,8 @@ class VisitLongRunRecoveryTest {
         var address = ""
         var description = ""
         var replyAt: Long? = null
+        var emptyUntil: Long? = null
+        var temporaryEmptyReads = 0
         var reads = 0
         var rejected = 0
         val rejectedRecords = mutableSetOf<Int>()
@@ -37,6 +39,8 @@ class VisitLongRunRecoveryTest {
         fun tree(): UiTree {
             val name = "样例${('一'.code + index).toChar()}"
             val root = listOf(UiNode("r", bounds = screen))
+            val temporaryEmpty = !opened && emptyUntil?.let { now() < it } == true
+            if (temporaryEmpty) temporaryEmptyReads++
             val nodes = if (opened) listOf(
                 UiNode("r/0", text = "新增"), UiNode("r/1", text = "走访记录"),
                 UiNode("r/2"), UiNode("r/2/0", text = "姓名"), UiNode("r/2/1", text = name),
@@ -46,7 +50,7 @@ class VisitLongRunRecoveryTest {
                 UiNode("r/6", text = "正常", selected = true, clickable = true), UiNode("r/7", text = "异常", clickable = true),
                 UiNode("r/8", text = "提交", clickable = true),
             ) else listOf(UiNode("r/0", text = "待办", selected = true), UiNode("r/1", text = "已完成")) +
-                if (index == count) listOf(UiNode("r/empty", text = "暂无待办")) else listOf(
+                if (index == count || temporaryEmpty) listOf(UiNode("r/empty", text = "暂无待办")) else listOf(
                     UiNode("r/2", bounds = UiBox(0, 100, 700, 500)),
                     UiNode("r/2/0", text = name, bounds = UiBox(20, 120, 120, 160)),
                     UiNode("r/2/1", text = "身份证：示例", bounds = UiBox(20, 170, 300, 200)),
@@ -64,7 +68,12 @@ class VisitLongRunRecoveryTest {
                 reads++
                 delay(listOf(90L, 700L, 1300L, 180L)[reads % 4])
                 if (reads % 17 == 0) throw VisitReadPending("界面结构正在变化")
-                if (replyAt?.let { now() >= it } == true) { replyAt = null; opened = false; index++ }
+                if (replyAt?.let { now() >= it } == true) {
+                    replyAt = null
+                    opened = false
+                    index++
+                    if (index == 5) emptyUntil = now() + 3_000
+                }
                 return tree()
             }
             override suspend fun perform(tree: UiTree, node: UiNode, action: Int, value: String?) {
@@ -100,6 +109,7 @@ class VisitLongRunRecoveryTest {
         }
         assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
         assertEquals(count.toLong(), runner.state.value.rounds)
+        assertTrue("Both return and next list read saw the placeholder", temporaryEmptyReads >= 2)
         assertEquals((0 until count).toList(), clickedRecords)
         assertEquals(9, rejected); assertEquals(rejected, recoveries)
         assertTrue(clicks.zipWithNext().all { (a, b) -> b - a >= 61_000 })

@@ -40,6 +40,16 @@ class VisitContractTest {
         assertThrows(VisitMismatch::class.java) { contract.records(tree) }
         assertTrue(contract.records(tree.copy(nodes = tree.nodes + UiNode("r/2", text = "暂无待办"))).isEmpty())
     }
+    @Test fun emptyHintIsIgnoredOnAnUnselectedLoadingOrPartlyPublishedList() {
+        val empty = UiTree("fixture.app", 1, listOf(UiNode("r"), UiNode("r/0", text = "待办", selected = true),
+            UiNode("r/1", text = "已完成"), UiNode("r/2", text = "暂无数据")))
+        assertTrue(contract.emptyPendingList(empty))
+        assertFalse(contract.emptyPendingList(empty.copy(nodes = empty.nodes.map {
+            if (it.path == "r/0") it.copy(selected = false) else it
+        })))
+        assertFalse(contract.emptyPendingList(empty.copy(nodes = empty.nodes + UiNode("r/loading", text = "加载中"))))
+        assertFalse(contract.emptyPendingList(empty.copy(nodes = empty.nodes + UiNode("r/history", text = "走访记录"))))
+    }
     @Test fun fieldsAreAssociatedWithLabelsNotResidenceText() {
         val tree = formTree(); contract.form(tree, contract.top(listTree()))
         assertEquals("r/4/1", contract.field(tree, "检查地址").path)
