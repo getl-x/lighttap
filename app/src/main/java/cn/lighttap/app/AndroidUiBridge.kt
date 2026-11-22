@@ -84,10 +84,9 @@ class AndroidUiBridge(private val service: AccessibilityService, override val ta
         var dispatched = false
         try {
         guard()
-        val fresh = captureFresh()
         val matches = if (navigation) {
-            tree.windowId == fresh.windowId && VisitContract(target).visitButton(fresh) == node
-        } else sameVisitPage(tree, fresh)
+            matchesVisitNavigation(tree, node, ::captureFresh)
+        } else sameVisitPage(tree, captureFresh())
         if (!matches) throw VisitMismatch("执行前页面发生变化，已暂停")
         if (!node.visible || !node.enabled || !node.bounds.nonEmpty) throw VisitMismatch("目标控件不可操作")
         val panel = withContext(Dispatchers.Main.immediate) { overlayBounds() }
@@ -125,6 +124,13 @@ class AndroidUiBridge(private val service: AccessibilityService, override val ta
             throw e
         }
     }
+}
+
+internal suspend fun matchesVisitNavigation(tree: UiTree, node: UiNode, capture: suspend () -> UiTree): Boolean {
+    // Retry an interrupted accessibility read before sending the navigation action.
+    val fresh = VisitObservation(capture = capture).read()
+    return tree.packageName == fresh.packageName && tree.windowId == fresh.windowId &&
+        VisitContract(tree.packageName).visitButton(fresh) == node
 }
 
 /** Never fall back after an accepted click, especially not for submission. */
