@@ -13,6 +13,7 @@ val accessDigest = System.getenv("BUILD_ACCESS_DIGEST") ?: privateOptions.getPro
 require(!accessSalt.isNullOrBlank() && !accessDigest.isNullOrBlank()) { "Required build inputs are not configured" }
 require(accessSalt.matches(Regex("[A-Za-z0-9+/=]+")) && accessDigest.matches(Regex("[A-Za-z0-9+/=]+"))) { "Invalid build input encoding" }
 val releaseStore = signingValue("storeFile", "SIGNING_STORE_FILE")
+val testVersion = providers.gradleProperty("lighttapTestVersion").orNull
 android {
     namespace = "cn.lighttap.app"
     compileSdk = 36
@@ -26,6 +27,11 @@ android {
         }
     }
     buildTypes {
+        if (testVersion != null) getByName("debug") {
+            applicationIdSuffix = ".test"
+            resValue("string", "app_name", "轻点测试版")
+            resValue("string", "accessibility_service_name", "轻点测试版 · 点击服务")
+        }
         release {
             isMinifyEnabled = false
             if (releaseStore != null) signingConfig = signingConfigs.getByName("personal")
@@ -33,7 +39,7 @@ android {
     }
     defaultConfig { ndk { abiFilters += listOf("arm64-v8a") } }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
-    buildFeatures { compose = true; buildConfig = true }
+    buildFeatures { compose = true; buildConfig = true; resValues = testVersion != null }
     defaultConfig {
         buildConfigField("String", "ACCESS_SALT", "\"${accessSalt}\"")
         buildConfigField("String", "ACCESS_DIGEST", "\"${accessDigest}\"")
@@ -41,6 +47,11 @@ android {
     testOptions { unitTests.isReturnDefaultValues = true }
     testBuildType = "release"
     lint { abortOnError = true }
+}
+androidComponents {
+    onVariants(selector().withBuildType("debug")) { variant ->
+        testVersion?.let { version -> variant.outputs.forEach { it.versionName.set(version) } }
+    }
 }
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 dependencies {

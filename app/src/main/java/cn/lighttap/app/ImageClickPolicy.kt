@@ -83,8 +83,6 @@ internal class ImageClickGuard(target: String) {
         } else {
             contract.form(before, null, visualFallback = true); contract.verifyValues(before)
             contract.form(after, null, visualFallback = true); contract.verifyValues(after)
-            if (contract.formFingerprint(before) != contract.formFingerprint(after))
-                throw VisitMismatch("表单记录与所选卡片不一致")
             original = contract.submit(before); current = contract.submit(after)
         }
         if (expected != original || !current.visible || !current.enabled || !current.bounds.nonEmpty)
@@ -119,6 +117,7 @@ internal class ImageClickFlow(
             currentCoroutineContext().ensureActive()
             val after = native.capture()
             val final = guard.reacquire(plan.observed, plan.observedNode, after, plan.navigation)
+            if (plan.request != plan.observed) guard.reacquire(plan.request, plan.requestedNode, after, plan.navigation)
             if (final.bounds != plan.observedNode.bounds) throw VisitMismatch("图像识别期间按钮移动，已暂停")
             ImageClickLocator.validate(plan.evidence, final.bounds, plan.navigation, now())
             currentCoroutineContext().ensureActive()

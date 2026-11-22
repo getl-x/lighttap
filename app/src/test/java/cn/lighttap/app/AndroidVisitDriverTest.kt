@@ -82,7 +82,7 @@ class AndroidVisitDriverTest {
         }
         override suspend fun perform(tree: UiTree, node: UiNode, action: Int, value: String?) {
             currentCoroutineContext().ensureActive()
-            if (node.text == "提交" && rejectSubmitBeforeDispatch) throw VisitPreActionMismatch("执行前页面发生变化，已暂停")
+            if (node.text == "提交" && rejectSubmitBeforeDispatch) awaitVisitGesture { false }
             actions += if (action == AccessibilityNodeInfo.ACTION_SET_TEXT) node.path else node.text
             when {
                 value != null -> form = form.copy(nodes = form.nodes.map { if (it.path == node.path) it.copy(text = value) else it })
@@ -339,6 +339,31 @@ class AndroidVisitDriverTest {
         assertEquals(1, ui.actions.count { it == "提交" })
     }
 
+    @Test fun rejectedVisitControlUsesOneFreshScreenshotFallback() = runTest {
+        val now = { testScheduler.currentTime }
+        val ui = Ui(now).apply { rejectedNavigationClicks = 1 }
+        var screenshots = 0
+        var taps = 0
+        val bridge = object : VisitUiAccess by ui {
+            override suspend fun findVisitImage(tree: UiTree): VisitImageTarget {
+                screenshots++
+                return VisitImageTarget(UiBox(530, 340, 560, 360), now())
+            }
+            override suspend fun openVisitImage(tree: UiTree, image: VisitImageTarget) {
+                taps++
+                ui.opened = true
+            }
+        }
+        val runner = runner(AndroidVisitDriver(bridge, VisitChoiceVerifier { _, _ -> }, Fence(now), now))
+        runner.start(plan, VisitExecution.FORMAL)
+        advanceTimeBy(3_000); runCurrent()
+        assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
+        assertEquals(1, ui.navigationClicks)
+        assertEquals(1, screenshots)
+        assertEquals(1, taps)
+        assertEquals(1, ui.actions.count { it == "提交" })
+    }
+
     @Test fun blockedBeforeDispatchKeepsOpenStepAndDoesNotWaitForUnopenedForm() = runTest {
         val ui = Ui { testScheduler.currentTime }.apply { blockedNavigationClicks = 1 }
         val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, Fence(), { testScheduler.currentTime })
@@ -568,6 +593,48 @@ class AndroidVisitDriverTest {
         assertEquals(1L, runner.state.value.rounds)
         assertEquals(listOf("走访", "r/4/1", "r/5/1", "提交"), ui.actions)
         assertFalse(driver.pendingSubmission)
+    }
+
+    @Test fun missingFormAddressAndChangingNoninteractiveTextDoNotBlockFormActions() = runTest {
+        val now = { testScheduler.currentTime }
+        val ui = Ui(now)
+        var reads = 0
+        val bridge = object : VisitUiAccess by ui {
+            override suspend fun capture(): UiTree {
+                val tree = ui.capture()
+                if (!tree.has("新增")) return tree
+                val nodes = tree.nodes.filterNot { it.path.startsWith("r/3/") }.map {
+                    if (it.path == "r/9") it.copy(text = "提示 ${++reads}") else it
+                }
+                return tree.copy(nodes = nodes)
+            }
+        }
+        val runner = runner(AndroidVisitDriver(bridge, VisitChoiceVerifier { _, _ -> }, Fence(now), now))
+        runner.start(plan, VisitExecution.FORMAL)
+        advanceTimeBy(3_000); runCurrent()
+        assertEquals(VisitStatus.COMPLETED, runner.state.value.status)
+        assertEquals(listOf("走访", "r/4/1", "r/5/1", "提交"), ui.actions)
+    }
+
+    @Test fun staleTopCardEntersTheNextFormButCannotSubmitItAgain() = runTest {
+        val now = { testScheduler.currentTime }
+        val ui = Ui(now)
+        val bridge = object : VisitUiAccess by ui {
+            override suspend fun capture(): UiTree = if (ui.opened && !ui.submitted) ui.form else listTree()
+            override suspend fun openVisit(tree: UiTree, node: UiNode) {
+                ui.submitted = false
+                ui.openVisit(tree, node)
+            }
+        }
+        val runner = runner(AndroidVisitDriver(bridge, VisitChoiceVerifier { _, _ -> }, Fence(now), now))
+        runner.start(plan.copy(mode = VisitRunMode.COUNT, countText = "2"), VisitExecution.FORMAL)
+        advanceTimeBy(65_000); runCurrent()
+        assertEquals(VisitStatus.ERROR, runner.state.value.status)
+        assertEquals(VisitStep.WAIT_FORM, runner.state.value.step)
+        assertEquals(1L, runner.state.value.rounds)
+        assertEquals(2, ui.navigationClicks)
+        assertEquals(1, ui.actions.count { it == "提交" })
+        assertFalse(runner.state.value.pendingSubmission)
     }
     @Test fun visualReadCanPublishUnrelatedTextWithoutRejectingValidForm() = runTest {
         val ui = Ui { testScheduler.currentTime }.apply { form = form.copy(nodes = form.nodes.map { if (it.path == "r/6") it.copy(selected = false) else it }) }

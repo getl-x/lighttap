@@ -1,24 +1,31 @@
 package cn.lighttap.app
 
-/** Keep business identity/state and every visible/interactive surface. Only
- * known noninteractive countdown text and hidden noninteractive decoration may
- * vary. Unknown pages/labels keep the original exact comparison. */
+/** Allow noninteractive text changes in a known form. Require the same
+ * business fields and interactive controls, including any newly shown dialog. */
 internal fun sameVisitPage(before: UiTree, after: UiTree): Boolean {
     if (before == after) return true
     if (before.packageName != after.packageName || before.windowId != after.windowId) return false
-    val oldKey = businessKey(before) ?: return false
-    val newKey = businessKey(after) ?: return false
+    if (before.has("新增") || after.has("新增")) return sameVisitForm(before, after)
+    val oldKey = listKey(before) ?: return false
+    val newKey = listKey(after) ?: return false
     return oldKey == newKey && safetyNodes(before) == safetyNodes(after)
 }
 
-private fun businessKey(tree: UiTree): List<Any>? = try {
+private fun sameVisitForm(before: UiTree, after: UiTree): Boolean = try {
+    val contract = VisitContract(before.packageName)
+    fun controls(tree: UiTree) = tree.nodes.filter {
+        it.editable || it.clickable || it.scrollable || it.selected || it.checked
+    }
+    fun fields(tree: UiTree) = listOf(contract.field(tree, "检查地址"), contract.field(tree, "走访描述"))
+    contract.formEvidence(before).matches(contract.formEvidence(after)) &&
+        contract.normalState(before) == contract.normalState(after) &&
+        fields(before) == fields(after) && controls(before) == controls(after)
+} catch (_: VisitMismatch) { false }
+
+private fun listKey(tree: UiTree): List<Any>? = try {
     val contract = VisitContract(tree.packageName)
     if (contract.loading(tree)) null
-    else if (tree.has("新增")) {
-        contract.formIdentity(tree, null)
-        listOf("form", contract.formFingerprint(tree), contract.field(tree, "检查地址"), contract.field(tree, "走访描述"),
-            contract.normalState(tree), contract.choiceButton(tree, "正常"), contract.choiceButton(tree, "异常"), contract.submit(tree))
-    } else {
+    else {
         val records = contract.records(tree)
         listOf("list", records.map { listOf(it.fingerprint, it.cardPath, it.actionPath, tree.node(it.actionPath)) })
     }

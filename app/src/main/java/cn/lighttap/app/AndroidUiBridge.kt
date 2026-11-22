@@ -113,22 +113,7 @@ class AndroidUiBridge(private val service: AccessibilityService, override val ta
                 dispatchVisitClick(navigation, { current.performAction(AccessibilityNodeInfo.ACTION_CLICK) }) {
                     // Touch the fresh, exactly matched node bounds; never use preset coordinates
                     // and never retry an accepted action with another action type.
-                    val x = (node.bounds.left + node.bounds.right) / 2f
-                    val y = (node.bounds.top + node.bounds.bottom) / 2f
-                    val completed = withTimeoutOrNull(2_000) {
-                        suspendCancellableCoroutine<Boolean> { continuation ->
-                            val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(x, y) }, 0, 50)).build()
-                            val callback = object : AccessibilityService.GestureResultCallback() {
-                                override fun onCompleted(gestureDescription: GestureDescription?) { if (continuation.isActive) continuation.resume(true) }
-                                override fun onCancelled(gestureDescription: GestureDescription?) { if (continuation.isActive) continuation.resume(false) }
-                            }
-                            val dispatchedAt = SystemClock.elapsedRealtime()
-                            val accepted = service.dispatchGesture(gesture, callback, null)
-                            lastClickDispatchMs = if (accepted) dispatchedAt else null
-                            if (!accepted && continuation.isActive) continuation.resume(false)
-                        }
-                    } ?: false
-                    if (!completed) throw VisitMismatch("本次点击未确认完成，已暂停且不会自动重试")
+                    dispatchVisitGesture(service, node.bounds) { lastClickDispatchMs = it }
                 }
             } else {
                 dispatched = true
@@ -147,4 +132,38 @@ internal suspend fun dispatchVisitClick(navigation: Boolean, nodeClick: () -> Bo
     if (navigation) {
         if (!nodeClick()) throw VisitNavigationRejected()
     } else gesture()
+}
+
+private enum class VisitGestureResult { COMPLETED, REJECTED, CANCELLED }
+
+internal suspend fun awaitVisitGesture(dispatch: ((Boolean) -> Unit) -> Boolean) {
+    val result = withTimeoutOrNull(2_000) {
+        suspendCancellableCoroutine { continuation ->
+            val accepted = dispatch { completed ->
+                if (continuation.isActive)
+                    continuation.resume(if (completed) VisitGestureResult.COMPLETED else VisitGestureResult.CANCELLED)
+            }
+            if (!accepted && continuation.isActive) continuation.resume(VisitGestureResult.REJECTED)
+        }
+    }
+    when (result) {
+        VisitGestureResult.COMPLETED -> Unit
+        VisitGestureResult.REJECTED -> throw VisitPreActionMismatch("系统未接受本次手势，请查看后继续")
+        VisitGestureResult.CANCELLED, null -> throw VisitMismatch("本次点击未确认完成，已暂停且不会自动重试")
+    }
+}
+
+internal suspend fun dispatchVisitGesture(service: AccessibilityService, box: UiBox, recordDispatch: (Long?) -> Unit) {
+    val path = Path().apply { moveTo((box.left + box.right) / 2f, (box.top + box.bottom) / 2f) }
+    val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 50)).build()
+    awaitVisitGesture { complete ->
+        val callback = object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) { complete(true) }
+            override fun onCancelled(gestureDescription: GestureDescription?) { complete(false) }
+        }
+        val at = SystemClock.elapsedRealtime()
+        val accepted = service.dispatchGesture(gesture, callback, null)
+        recordDispatch(if (accepted) at else null)
+        accepted
+    }
 }

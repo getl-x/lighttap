@@ -2,6 +2,7 @@ name: Android APK
 on:
   push:
     branches: [main, master]
+    tags: ['v*-beta.*']
   pull_request:
   workflow_dispatch:
 permissions:
@@ -46,15 +47,49 @@ jobs:
           set -o pipefail
           "$sdkmanager" --sdk_root="$ANDROID_HOME" 'platforms;android-36' 'build-tools;36.0.0'
       - name: Test, lint and build APK
+        shell: bash
         env:
           BUILD_ACCESS_SALT: ${{ secrets.BUILD_ACCESS_SALT }}
           BUILD_ACCESS_DIGEST: ${{ secrets.BUILD_ACCESS_DIGEST }}
-        run: bash ./gradlew :app:testReleaseUnitTest :app:lintRelease :app:assembleDebug --console=plain
+        run: |
+          set -euo pipefail
+          gradle_args=()
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]
+            gradle_args+=("-PlighttapTestVersion=${GITHUB_REF_NAME#v}")
+          fi
+          bash ./gradlew :app:testReleaseUnitTest :app:lintRelease :app:assembleDebug --console=plain "${gradle_args[@]}"
       - name: Upload APK
+        if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v4
         with:
           name: lighttap-apk-${{ github.run_number }}
           path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+      - name: Verify and package test APK
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          tools="$ANDROID_HOME/build-tools/36.0.0"
+          apk="app/build/outputs/apk/debug/app-debug.apk"
+          badging=$("$tools/aapt2" dump badging "$apk")
+          grep -E "^package: name='cn\.lighttap\.app\.test' " <<< "$badging"
+          grep -F "versionName='$version'" <<< "$badging"
+          grep -F "application-label:'轻点测试版'" <<< "$badging"
+          "$tools/apksigner" verify --verbose "$apk"
+          "$tools/zipalign" -c -P 16 4 "$apk"
+          mkdir test-release
+          asset="lighttap-$version-test.apk"
+          cp "$apk" "test-release/$asset"
+          (cd test-release && sha256sum "$asset" > SHA256SUMS.txt)
+      - name: Upload test release assets
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttap-test-release
+          path: test-release/
           if-no-files-found: error
       - name: Upload verification reports
         if: always()
@@ -65,3 +100,37 @@ jobs:
             app/build/reports/tests/testReleaseUnitTest/
             app/build/reports/lint-results-release.html
           if-no-files-found: ignore
+  publish-test:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: lighttap-test-release
+          path: test-release
+      - name: Publish prerelease
+        working-directory: test-release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]
+          sha256sum --check --strict SHA256SUMS.txt
+          version="${GITHUB_REF_NAME#v}"
+          cat > notes.md <<EOF
+          轻点测试版 ${version}，由 GitHub Actions 构建并发布。
+
+          测试版与正式版可以并存。首次安装后，请为「轻点测试版」启用点击服务并配置测试任务。
+
+          此版本用于验证走访按钮点击、表单读取、滚动恢复和提交保护。
+
+          [构建记录](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})
+          EOF
+          gh release create "$GITHUB_REF_NAME" "lighttap-$version-test.apk" SHA256SUMS.txt \
+            --title "轻点 $version 测试版" --notes-file notes.md --verify-tag --prerelease --latest=false

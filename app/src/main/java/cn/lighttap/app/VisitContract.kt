@@ -84,6 +84,15 @@ class VisitRecord(val name: String, val address: String, val cardPath: String, v
     val fingerprint: String = hashText(name + "\u0000" + address)
     override fun toString() = "VisitRecord([private])"
 }
+
+internal data class VisitFormEvidence(val windowId: Int, val nameHash: String, val addressHash: String?) {
+    val recordKey: String? get() = addressHash?.let { "record:" + hashText("$nameHash:$it") }
+    val pendingKey: String get() = recordKey ?: "form:" + hashText("$windowId:$nameHash")
+
+    fun matches(other: VisitFormEvidence): Boolean =
+        windowId == other.windowId && nameHash == other.nameHash &&
+            (addressHash == null || other.addressHash == null || addressHash == other.addressHash)
+}
 fun canonicalLabel(text: String) = text.filterNot { it.isWhitespace() }
 fun hashText(text: String): String {
     val alphabet = "0123456789abcdef"
@@ -303,6 +312,12 @@ class VisitContract(val target: String) {
         field(tree, "检查地址"); field(tree, "走访描述")
     }
     fun formFingerprint(tree: UiTree): String = hashText(staticValue(tree, "r", "姓名") + "\u0000" + staticValue(tree, "r", "居住地址"))
+    internal fun formEvidence(tree: UiTree): VisitFormEvidence {
+        formIdentity(tree, null)
+        val name = hashText(staticValue(tree, "r", "姓名"))
+        val address = try { hashText(staticValue(tree, "r", "居住地址")) } catch (_: VisitMismatch) { null }
+        return VisitFormEvidence(tree.windowId, name, address)
+    }
     fun normalState(tree: UiTree): ChoiceResult {
         val normal = tree.exact("正常").singleOrNull() ?: throw VisitMismatch("无法唯一识别正常选项")
         val abnormal = tree.exact("异常").singleOrNull() ?: throw VisitMismatch("户籍状态结构不匹配")

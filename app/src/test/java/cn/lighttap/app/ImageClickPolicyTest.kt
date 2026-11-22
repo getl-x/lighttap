@@ -180,6 +180,17 @@ class ImageClickPolicyTest {
         try { flow.dispatch(plan); fail("Old evidence used") } catch (_: VisitPreActionMismatch) { }
         assertEquals(0, taps)
     }
+    @Test fun addressDisappearingBetweenCapturesCannotHideAChangedRecordAtDispatch() = runTest {
+        val original = form()
+        val native = Native(original.change("r/3/1") { it.copy(text = "") })
+        var taps = 0
+        val flow = ImageClickFlow(native, { _, _, _ -> evidence() }, { _, _ -> taps++ }, { 0 })
+        val plan = flow.prepare(original, contract.submit(original), false)
+        native.tree = original.change("r/3/1") { it.copy(text = "其他地址") }
+        try { flow.dispatch(plan); fail("Address changed between readings") }
+        catch (_: VisitPreActionMismatch) { }
+        assertEquals(0, taps)
+    }
     @Test fun confirmationKeysKeepOriginalApprovalAndImageApprovalIndependent() {
         assertEquals("test_confirmed", VisitRecognition.CONTROLS.confirmationKey)
         assertNotEquals(VisitRecognition.CONTROLS.confirmationKey, VisitRecognition.IMAGE.confirmationKey)

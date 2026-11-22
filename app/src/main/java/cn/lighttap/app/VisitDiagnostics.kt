@@ -81,6 +81,8 @@ data class VisitDebugEvent(
 internal fun safeVisitDebugReason(reason: String): String = when {
     reason == VISIT_BUTTONS_MISSING ||
         reason == "运行期间表单记录已变化，已暂停" ||
+        reason == "仍是上一条走访记录，请返回待办刷新后继续" ||
+        reason == "系统未接受本次手势，请查看后继续" ||
         reason == "走访记录和走访按钮可读；未点击" ||
         reason == "待办为空；未点击" ||
         reason == "返回待办页超时，请查看；保留保护标记，不会重复提交" -> reason

@@ -21,4 +21,15 @@ class VisitNavigationClickTest {
         dispatchVisitClick(false, { nodes++; true }, { gestures++ })
         assertEquals(0, nodes); assertEquals(1, gestures)
     }
+
+    @Test fun onlyExplicitGestureRejectionProvesThatNoClickWasSent() = runTest {
+        try { awaitVisitGesture { false }; fail("Expected a system rejection") }
+        catch (_: VisitPreActionMismatch) { }
+
+        for (dispatch in listOf<((Boolean) -> Unit) -> Boolean>({ complete -> complete(false); true }, { true })) {
+            try { awaitVisitGesture(dispatch); fail("Expected an uncertain result") }
+            catch (error: VisitMismatch) { assertFalse(error is VisitPreActionMismatch) }
+        }
+        awaitVisitGesture { complete -> complete(true); true }
+    }
 }

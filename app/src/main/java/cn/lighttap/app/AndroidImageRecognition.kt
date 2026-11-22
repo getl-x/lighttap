@@ -1,10 +1,8 @@
 package cn.lighttap.app
 
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.GestureDescription
 import android.app.KeyguardManager
 import android.graphics.Bitmap
-import android.graphics.Path
 import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
@@ -263,22 +261,7 @@ internal class AndroidImageVisitUiAccess(
                 throw VisitPreActionMismatch("执行前目标窗口已变化")
         } finally { @Suppress("DEPRECATION") root.recycle() }
         currentCoroutineContext().ensureActive()
-        val complete = withTimeoutOrNull(2_000) {
-            suspendCancellableCoroutine { continuation ->
-                val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(Path().apply {
-                    moveTo((box.left + box.right) / 2f, (box.top + box.bottom) / 2f)
-                }, 0, 50)).build()
-                val callback = object : AccessibilityService.GestureResultCallback() {
-                    override fun onCompleted(gestureDescription: GestureDescription?) { if (continuation.isActive) continuation.resume(true) }
-                    override fun onCancelled(gestureDescription: GestureDescription?) { if (continuation.isActive) continuation.resume(false) }
-                }
-                val at = SystemClock.elapsedRealtime()
-                val accepted = service.dispatchGesture(gesture, callback, null)
-                lastClickDispatchMs = if (accepted) at else null
-                if (!accepted && continuation.isActive) continuation.resume(false)
-            }
-        } ?: false
-        if (!complete) throw VisitMismatch("本次点击未确认完成，已暂停且不会自动重试")
+        dispatchVisitGesture(service, box) { lastClickDispatchMs = it }
     }
     suspend fun close() { prepared = null; ocr.close() }
     suspend fun clearRuntime() { prepared = null; ocr.clearRuntime() }

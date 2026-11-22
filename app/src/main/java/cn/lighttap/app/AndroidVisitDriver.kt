@@ -86,7 +86,8 @@ class AndroidVisitDriver internal constructor(
                 prepareUi: suspend () -> Unit = {}) : this(
         bridge, vision, AndroidSubmissionFence(service), { SystemClock.elapsedRealtime() }, diagnostics, prepareUi)
     private val contract = VisitContract(bridge.target)
-    private var formIdentity: String? = null
+    private var formIdentity: VisitFormEvidence? = null
+    private var lastReturnedRecord: String? = null
     private var returnedToList = false
     private var scrolls = 0
     private var opening = false
@@ -115,6 +116,7 @@ class AndroidVisitDriver internal constructor(
         val started = now()
         prepareUi()
         val tree = checkedForm()
+        requireNewForm()
         contract.verifyValues(tree)
         val checkedAt = now()
         bridge.prepareSubmit(tree, contract.submit(tree))
@@ -171,9 +173,11 @@ class AndroidVisitDriver internal constructor(
             val button = contract.visitButton(tree)
             val image = if (button == null) bridge.findVisitImage(tree) else null
             if (button == null && image == null) throw VisitMismatch(VISIT_BUTTONS_MISSING)
+            formIdentity = null
+            scrolls = 0
             retryOpening = false; opening = true; openingAt = now()
             try {
-                if (button != null) bridge.openVisit(tree, button)
+                if (button != null) openVisitControl(tree, button)
                 else bridge.openVisitImage(tree, checkNotNull(image))
             } catch (e: VisitMismatch) {
                 if (e is VisitNavigationRejected || e is VisitPreActionMismatch) { opening = false; retryOpening = true }
@@ -183,8 +187,9 @@ class AndroidVisitDriver internal constructor(
         }
         VisitStep.WAIT_FORM -> {
             val form = waitForForm()
-            if (formIdentity == null) formIdentity = contract.formFingerprint(form)
+            if (formIdentity == null) formIdentity = contract.formEvidence(form)
             verifyNormal(form)
+            requireNewForm()
             opening = false
             openingAt = null
             retryOpening = false
@@ -196,8 +201,14 @@ class AndroidVisitDriver internal constructor(
             val field = contract.field(tree, "走访描述")
             if (fullyVisible(tree, field)) VisitEffect(message = "描述输入框已可见，尚未填写")
             else {
-                if (scrolls >= 8) throw VisitMismatch("多次滚动后仍未定位描述框，停止适配")
+                if (scrolls >= 8) {
+                    scrolls = 0
+                    throw VisitMismatch("多次滚动后仍未定位描述框，停止适配")
+                }
                 val scroll = tree.ancestors(field).firstOrNull { it.scrollable && it.enabled && it.visible }
+                    ?: tree.nodes.singleOrNull {
+                        field.bounds.nonEmpty && it.scrollable && it.enabled && it.visible && it.bounds.intersects(field.bounds)
+                    }
                     ?: throw VisitMismatch("找不到与描述框关联的可滚动控件")
                 bridge.perform(tree, scroll, AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
                 scrolls++
@@ -214,7 +225,8 @@ class AndroidVisitDriver internal constructor(
             val tree = submissionTree(); contract.verifyValues(tree)
             if (pendingSubmission) throw VisitMismatch("已有未确认提交，禁止再次提交")
             val button = contract.submit(tree)
-            val identity = formIdentity ?: throw VisitMismatch("缺少记录核验信息")
+            requireNewForm()
+            val identity = formIdentity?.pendingKey ?: throw VisitMismatch("缺少记录核验信息")
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             // Recheck the fence immediately before marking: no preparation or
             // waiting path is allowed to move the submission deadline earlier.
@@ -248,9 +260,11 @@ class AndroidVisitDriver internal constructor(
         }
         VisitStep.WAIT_LIST -> {
             val at = waitForList()
+            val returnedRecord = fence.hash?.takeIf { it.startsWith("record:") }
             if (!fence.confirmSubmission(at)) throw VisitMismatch("提交确认计时保存失败，保留保护标记")
             if (!fence.clear()) throw VisitMismatch("提交已核对，但保护标记未能清除；保持暂停")
             lastConfirmation = ReturnConfirmation(at, "已返回待办页")
+            lastReturnedRecord = returnedRecord
             returnedToList = true
             formIdentity = null
             diagnostics.record(VisitDebugEvent(VisitDebugKind.RETURN_CONFIRMED, step = step, pending = false, ok = true))
@@ -296,9 +310,14 @@ class AndroidVisitDriver internal constructor(
         return verifyNormal(tree)
     }
     private fun checkFormIdentity(tree: UiTree) {
-        contract.formIdentity(tree, null)
-        val expected = formIdentity ?: return
-        if (contract.formFingerprint(tree) != expected) throw VisitMismatch("运行期间表单记录已变化，已暂停")
+        val expected = formIdentity ?: run { contract.formIdentity(tree, null); return }
+        val current = contract.formEvidence(tree)
+        if (!expected.matches(current)) throw VisitMismatch("运行期间表单记录已变化，已暂停")
+        if (expected.addressHash == null && current.addressHash != null) formIdentity = current
+    }
+    private fun requireNewForm() {
+        val current = formIdentity?.recordKey ?: return
+        if (current == lastReturnedRecord) throw VisitMismatch("仍是上一条走访记录，请返回待办刷新后继续")
     }
     private fun checkForm(tree: UiTree) {
         checkFormIdentity(tree)
@@ -336,6 +355,22 @@ class AndroidVisitDriver internal constructor(
     }
     private suspend fun hasVisitButtons(tree: UiTree): Boolean =
         contract.visitButton(tree) != null || bridge.findVisitImage(tree) != null
+
+    private suspend fun openVisitControl(tree: UiTree, button: UiNode) {
+        try { bridge.openVisit(tree, button) }
+        catch (rejected: VisitNavigationRejected) {
+            // The system explicitly rejected the first click.
+            opening = false
+            retryOpening = true
+            val fresh = observations.read()
+            if (fresh.packageName != tree.packageName || fresh.windowId != tree.windowId || fresh.has("新增")) throw rejected
+            val image = bridge.findVisitImage(fresh) ?: throw rejected
+            opening = true
+            retryOpening = false
+            openingAt = now()
+            bridge.openVisitImage(fresh, image)
+        }
+    }
 
     private suspend fun waitForList(): Long {
         if (fence.hash == null) throw VisitMismatch("缺少提交保护标记")
@@ -385,7 +420,7 @@ class AndroidVisitDriver internal constructor(
         if (!hasVisitButtons(tree)) throw VisitMismatch(VISIT_BUTTONS_MISSING)
         return "走访记录和走访按钮可读；未点击"
     }
-    override fun release() { invalidatePrepared(); formIdentity = null; returnedToList = false; scrolls = 0; opening = false; openingAt = null; retryOpening = false }
+    override fun release() { invalidatePrepared(); formIdentity = null; lastReturnedRecord = null; returnedToList = false; scrolls = 0; opening = false; openingAt = null; retryOpening = false }
     override suspend fun clearRuntime(): Boolean {
         release(); lastConfirmation = null; returnChecks = 0
         return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { fence.clear() }

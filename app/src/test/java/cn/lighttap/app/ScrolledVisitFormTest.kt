@@ -84,6 +84,7 @@ class ScrolledVisitFormTest {
         var tree = form(false)
         var opened = false
         var scrolls = 0
+        var revealsDescription = true
         var submits = 0
         val writes = mutableListOf<String>()
         private val list = UiTree(target, 1, listOf(
@@ -97,7 +98,10 @@ class ScrolledVisitFormTest {
         override suspend fun capture() = if (opened) tree else list
         override suspend fun perform(tree: UiTree, node: UiNode, action: Int, value: String?) {
             when (action) {
-                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD -> { scrolls++; this.tree = form(collapsed = true) }
+                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD -> {
+                    scrolls++
+                    if (revealsDescription) this.tree = form(collapsed = true)
+                }
                 AccessibilityNodeInfo.ACTION_SET_TEXT -> {
                     writes += node.path
                     this.tree = this.tree.change(node.path) { it.copy(text = value!!) }
@@ -111,6 +115,23 @@ class ScrolledVisitFormTest {
         override var target: String? = null
         override fun mark(hash: String, target: String): Boolean { this.hash = hash; this.target = target; return true }
         override fun clear(): Boolean { hash = null; target = null; return true }
+    }
+    @Test fun anExplicitRetryAfterTheScrollLimitCanLocateTheDescription() = runTest {
+        val ui = Ui().apply { revealsDescription = false }
+        val driver = AndroidVisitDriver(ui, VisitChoiceVerifier { _, _ -> }, Fence(), { testScheduler.currentTime })
+        for (step in listOf(VisitStep.FIND_LIST, VisitStep.OPEN_FORM, VisitStep.WAIT_FORM)) driver.execute(step)
+        repeat(8) { assertTrue(driver.execute(VisitStep.LOCATE_DESCRIPTION).repeat) }
+        try {
+            driver.execute(VisitStep.LOCATE_DESCRIPTION)
+            fail("Expected the scroll limit to stop the task")
+        } catch (error: VisitMismatch) {
+            assertTrue(error.reason.contains("多次滚动"))
+        }
+        assertEquals(8, ui.scrolls)
+        ui.revealsDescription = true
+        assertTrue(driver.execute(VisitStep.LOCATE_DESCRIPTION).repeat)
+        assertFalse(driver.execute(VisitStep.LOCATE_DESCRIPTION).repeat)
+        assertEquals(9, ui.scrolls)
     }
     @Test fun continueAfterOneScrollLocatesThenFillsAndVerifiesInBothModes() = runTest {
         for (recognition in VisitRecognition.entries) {
