@@ -77,7 +77,7 @@ fun PrivatePanel(model: AppModel) {
                 OutlinedButton(onClick = { local.controller?.clearRuntimeCache() }, enabled = service != null && !cacheBusy,
                     modifier = Modifier.fillMaxWidth()) { Text(if (cacheBusy) "正在清理运行缓存…" else "清理运行缓存") }
                 Text("停止当前任务并清除运行步骤、计数、待处理状态与识图缓存。配置、方案和提交间隔保留；清理后请回到待办列表重新开始。", style = MaterialTheme.typography.bodySmall)
-                if (state.pendingSubmission) Text("等待结果确认：只核对上次结果，不会再次提交。", color = MaterialTheme.colorScheme.error)
+                if (state.pendingSubmission) Text("正在等待返回待办页，期间不会再次提交。", color = MaterialTheme.colorScheme.error)
                 if (state.step == VisitStep.SUBMIT && state.remainingWaitMs > 0 && state.active) Text("提交间隔剩余 ${countdown(state.remainingWaitMs)}", color = statusColor, style = MaterialTheme.typography.headlineSmall)
                 if (state.active) {
                     Text("下一步：${state.step.title}", style = MaterialTheme.typography.bodyMedium)
@@ -126,7 +126,7 @@ fun PrivatePanel(model: AppModel) {
                 settings.error()?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 TextButton(onClick = { details = !details }) { Text(if (details) "收起运行说明" else "查看计时与核验规则") }
                 if (details) {
-                    Text("通常从上次有效提交点击计时；若提交后出现加载，则从加载结束、正常待办页恢复并确认成功后的首个有效时刻计时。加载中的表单或灰色遮罩都不启动间隔；未确认结果前禁止再次提交。暂停期间间隔继续计时。", style = MaterialTheme.typography.bodySmall)
+                    Text("提交后，从首次识别到待办页按钮或空列表提示开始计时。等待返回期间禁止再次提交，暂停期间计时继续。", style = MaterialTheme.typography.bodySmall)
                     Text("状态画面只在内存中核验，不保存、不上传。界面必须完整可读并严格匹配，任何不确定都会暂停。", style = MaterialTheme.typography.bodySmall)
                     Text("检查地址：松州园小区\n走访描述：无异常\n已有其他内容或状态异常时停止，不覆盖。", style = MaterialTheme.typography.bodySmall)
                 }

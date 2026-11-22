@@ -79,6 +79,11 @@ data class VisitDebugEvent(
 /** Allow only application-owned messages. Future/raw platform errors fall back
  * to a fixed label rather than accidentally exporting business text. */
 internal fun safeVisitDebugReason(reason: String): String = when {
+    reason == VISIT_BUTTONS_MISSING ||
+        reason == "运行期间表单记录已变化，已暂停" ||
+        reason == "走访记录和走访按钮可读；未点击" ||
+        reason == "待办为空；未点击" ||
+        reason == "返回待办页超时，请查看；保留保护标记，不会重复提交" -> reason
     reason in DEBUG_REASONS -> reason
     listOf("检查地址", "走访描述", "姓名", "身份证", "居住地址").any { label ->
         reason == "字段标签缺失或不唯一：$label" || reason == "不能唯一关联输入框：$label"

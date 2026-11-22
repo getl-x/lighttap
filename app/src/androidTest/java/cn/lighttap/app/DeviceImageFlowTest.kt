@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.view.Gravity
+import android.view.View
 import android.view.WindowManager
 import android.widget.*
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -74,8 +75,7 @@ class DeviceImageFlowTest {
             override fun mark(hash: String, target: String): Boolean { this.hash = hash; this.target = target; return true }
             override fun clear(): Boolean { hash = null; target = null; return true }
         }
-        val driver = AndroidVisitDriver(bridge, AndroidChoiceVision(service), fence,
-            AndroidReturnVision(service), { SystemClock.elapsedRealtime() })
+        val driver = AndroidVisitDriver(bridge, AndroidChoiceVision(service), fence, { SystemClock.elapsedRealtime() })
         val runner = VisitRunner(scope, driver, { SystemClock.elapsedRealtime() })
         var navigationClicks = 0; var submissions = 0
         var address: EditText? = null; var description: EditText? = null
@@ -137,11 +137,15 @@ class DeviceImageFlowTest {
                 val layout = page(); tabs(layout)
                 layout.addView(LinearLayout(activity).apply {
                     orientation = LinearLayout.VERTICAL
-                    label("样例甲"); label("身份证：示例"); label("居住地址：测试地址"); label("0/1")
                     addView(LinearLayout(activity).apply {
                         orientation = LinearLayout.HORIZONTAL
-                        button("走访记录") {}
-                        button("走访") { navigationClicks++; form() }
+                        val rowButtons = listOf(button("走访记录") {}, button("走访") { navigationClicks++; form() })
+                        for (button in rowButtons) {
+                            button.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                            button.layoutParams = LinearLayout.LayoutParams(0, dp(54), 1f).apply {
+                                setMargins(dp(3), dp(8), dp(3), dp(8))
+                            }
+                        }
                     })
                 })
             }

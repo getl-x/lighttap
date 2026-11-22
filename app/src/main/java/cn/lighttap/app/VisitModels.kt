@@ -17,16 +17,16 @@ data class VisitSettings(val targetPackage: String = "", val mode: VisitRunMode 
     fun limit(execution: VisitExecution): Long? = if (execution == VisitExecution.STEP_TEST || mode == VisitRunMode.ONCE) 1 else if (mode == VisitRunMode.COUNT) countText.toLong() else null
 }
 enum class VisitStep(val title: String, val expected: String) {
-    FIND_LIST("识别待办列表", "列表稳定，顶部记录和走访按钮唯一明确"),
-    OPEN_FORM("点击走访", "仅触发顶部记录的走访按钮一次"),
-    WAIT_FORM("核验新增表单", "表单与所选记录一致"),
+    FIND_LIST("识别待办按钮", "同一行显示走访记录和走访"),
+    OPEN_FORM("点击走访", "点一次最上面一组的走访按钮"),
+    WAIT_FORM("核验新增表单", "确认当前表单可继续填写"),
     FILL_ADDRESS("填写检查地址", "地址写入并回读一致"),
     LOCATE_DESCRIPTION("定位走访描述", "描述输入框可见，每次滚动独立确认"),
     FILL_DESCRIPTION("填写走访描述", "描述写入并回读一致"),
     VERIFY_FORM("提交前核验", "记录、两字段和正常状态均已核验"),
     SUBMIT("提交一次", "提交仅派发一次，结果待确认"),
-    WAIT_LIST("核验返回列表", "表单退出，原顶部记录移除，列表稳定"),
-    GAP("开始下一轮", "重新核验列表后准备下一条"),
+    WAIT_LIST("等待返回待办", "看到走访记录和走访，或明确的空列表提示"),
+    GAP("开始下一轮", "重新寻找走访按钮"),
 }
 enum class VisitStatus { IDLE, RUNNING, WAITING, CHECKPOINT, PAUSED, ERROR, FINISH_CONFIRM, COMPLETED }
 data class VisitState(

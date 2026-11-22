@@ -18,6 +18,16 @@ internal class PreparedImageClick(val request: UiTree, val requestedNode: UiNode
 
 internal object ImageClickLocator {
     const val MAX_AGE_MS = 5_000L
+    fun visitButton(lines: List<ImageText>, width: Int, height: Int): UiBox? {
+        val visible = lines.filter {
+            val box = it.bounds
+            box.nonEmpty && box.left >= 0 && box.top >= 0 && box.right <= width && box.bottom <= height
+        }
+        val history = visible.filter { canonicalLabel(it.text) == "走访记录" }
+        val visits = visible.filter { canonicalLabel(it.text) == "走访" }
+        val (partner, button) = topVisitPair(history, visits, ImageText::bounds) ?: return null
+        return button.bounds.takeIf { partner.confidence in .90f..1f && button.confidence in .90f..1f }
+    }
     fun locate(lines: List<ImageText>, label: String, button: UiBox, width: Int, height: Int): UiBox {
         if (label !in setOf("走访", "提交") || !button.nonEmpty || button.left < 0 || button.top < 0 ||
             button.right > width || button.bottom > height) throw VisitMismatch("图像目标控件不完整可见，已暂停")
@@ -135,4 +145,6 @@ internal class SelectedVisitUiAccess(private val selected: () -> VisitRecognitio
     override fun discardSubmit() { controls.discardSubmit(); images.discardSubmit() }
     override suspend fun perform(tree: UiTree, node: UiNode, action: Int, value: String?) = active.perform(tree, node, action, value)
     override suspend fun openVisit(tree: UiTree, node: UiNode) = active.openVisit(tree, node)
+    override suspend fun findVisitImage(tree: UiTree) = images.findVisitImage(tree)
+    override suspend fun openVisitImage(tree: UiTree, image: VisitImageTarget) = images.openVisitImage(tree, image)
 }

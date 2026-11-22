@@ -159,7 +159,7 @@ class PrivateController(private val service: ClickAccessibilityService, private 
     private val bridge = DiagnosedVisitUiAccess(SelectedVisitUiAccess({ model.settings.value.recognition },
         SurfaceVisitUiAccess(nativeBridge, surface), imageBridge), model.debugLog, { SystemClock.elapsedRealtime() })
     private val driver: AndroidVisitDriver = AndroidVisitDriver(service, bridge, AndroidChoiceVision(service, surface), model.debugLog,
-        surface, { if (shown) overlay.prepare(runner.state.value, mode) })
+        { if (shown) overlay.prepare(runner.state.value, mode) })
     private val runner: VisitRunner = VisitRunner(scope, driver, { SystemClock.elapsedRealtime() }, { notifyPause() }, { model.confirmTest() },
         onCompleted = { vibration.complete(service.appModel.completionVibration.mode.value) }, diagnostics = model.debugLog)
     private var mode = VisitExecution.STEP_TEST
@@ -185,11 +185,11 @@ class PrivateController(private val service: ClickAccessibilityService, private 
         model.probeResult.value = message
         model.debugLog.record(VisitDebugEvent(VisitDebugKind.PROBE, reason = message))
         if (shown) overlay.render(runner.state.value.copy(message = message), mode)
-    }, { service.notice(it) }, timeoutMs = { if (model.settings.value.recognition == VisitRecognition.IMAGE) 20_000L else 5_000L }, read = {
+    }, { service.notice(it) }, timeoutMs = { 20_000L }, read = {
         val result = driver.probe()
         if (model.settings.value.recognition == VisitRecognition.IMAGE) {
             imageBridge.probe()
-            "本机识字与按钮定位可用；未填写、未点击、未提交"
+            "按钮定位可用；未填写、未点击、未提交"
         } else result
     })
     val probing get() = probeCheck.active

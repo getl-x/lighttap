@@ -49,11 +49,14 @@ class DiagnosedVisitUiAccess(
             throw e
         }
     }
-    override suspend fun openVisit(tree: UiTree, node: UiNode) {
+    override suspend fun findVisitImage(tree: UiTree) = delegate.findVisitImage(tree)
+    override suspend fun openVisitImage(tree: UiTree, image: VisitImageTarget) = navigation { delegate.openVisitImage(tree, image) }
+    override suspend fun openVisit(tree: UiTree, node: UiNode) = navigation { delegate.openVisit(tree, node) }
+    private suspend fun navigation(click: suspend () -> Unit) {
         val start = now()
         diagnostics.record(VisitDebugEvent(VisitDebugKind.ACTION, action = VisitDebugAction.CLICK, submit = false, navigation = true))
         try {
-            delegate.openVisit(tree, node)
+            click()
             diagnostics.record(VisitDebugEvent(VisitDebugKind.ACTION, action = VisitDebugAction.CLICK, submit = false,
                 navigation = true, durationMs = now() - start, ok = true))
         } catch (e: Exception) {

@@ -18,6 +18,8 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
 
+data class VisitImageTarget(val bounds: UiBox, val capturedAt: Long)
+
 interface VisitUiAccess {
     val target: String
     val lastClickDispatchMs: Long? get() = null
@@ -30,6 +32,10 @@ interface VisitUiAccess {
     /** Navigation is distinct from submission: it may use the node's own click
      * action without changing the single gesture used to submit. */
     suspend fun openVisit(tree: UiTree, node: UiNode) = perform(tree, node, AccessibilityNodeInfo.ACTION_CLICK)
+    suspend fun findVisitImage(tree: UiTree): VisitImageTarget? = null
+    suspend fun openVisitImage(tree: UiTree, image: VisitImageTarget) {
+        throw VisitPreActionMismatch("图像识别不可用")
+    }
 }
 
 class AndroidUiBridge(private val service: AccessibilityService, override val target: String, private val overlayBounds: () -> UiBox?) : VisitUiAccess {
@@ -79,7 +85,10 @@ class AndroidUiBridge(private val service: AccessibilityService, override val ta
         try {
         guard()
         val fresh = captureFresh()
-        if (!sameVisitPage(tree, fresh)) throw VisitMismatch("执行前页面发生变化，已暂停")
+        val matches = if (navigation) {
+            tree.windowId == fresh.windowId && VisitContract(target).visitButton(fresh) == node
+        } else sameVisitPage(tree, fresh)
+        if (!matches) throw VisitMismatch("执行前页面发生变化，已暂停")
         if (!node.visible || !node.enabled || !node.bounds.nonEmpty) throw VisitMismatch("目标控件不可操作")
         val panel = withContext(Dispatchers.Main.immediate) { overlayBounds() }
         val notice = withContext(Dispatchers.Main.immediate) {

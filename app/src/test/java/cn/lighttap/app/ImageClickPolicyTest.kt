@@ -40,6 +40,16 @@ class ImageClickPolicyTest {
         assertEquals(textBox, ImageClickLocator.locate(listOf(ImageText(" 走 访 ", .98f, textBox),
             ImageText("走访", .99f, UiBox(540, 800, 630, 840)), ImageText("走访记录", .99f, button)), "走访", button, 720, 1600))
     }
+    @Test fun screenshotCanLocateTopButtonPairWithoutAnyRecordLabelsOrCoordinatesFromAccessibility() {
+        val history = ImageText("走访记录", .98f, UiBox(53, 28, 95, 41))
+        val visit = ImageText("走访", .98f, UiBox(150, 27, 172, 41))
+        val lowerHistory = ImageText("走访记录", .99f, history.bounds.copy(top = 60, bottom = 71))
+        val lowerVisit = ImageText("走访", .99f, visit.bounds.copy(top = 60, bottom = 71))
+        assertEquals(visit.bounds, ImageClickLocator.visitButton(listOf(lowerHistory, lowerVisit, visit, history), 228, 72))
+        assertNull(ImageClickLocator.visitButton(listOf(history, lowerVisit), 228, 72))
+        assertNull(ImageClickLocator.visitButton(listOf(history, visit, visit), 228, 72))
+        assertNull(ImageClickLocator.visitButton(listOf(ImageText("走访记录", .6f, history.bounds), visit), 228, 72))
+    }
     @Test fun ocrRegionTracksTheCurrentButtonAndClampsToScreen() {
         val region = imageOcrRegion(button, 720, 1600)
         assertTrue(region.left <= button.left && region.top <= button.top)

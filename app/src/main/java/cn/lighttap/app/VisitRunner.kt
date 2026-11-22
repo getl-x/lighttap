@@ -48,7 +48,7 @@ class VisitRunner(
                 if (!initialized) {
                     driver.begin()
                     initialized = true
-                    if (driver.pendingSubmission) mutable.value = state.value.copy(step = VisitStep.WAIT_LIST, pendingSubmission = true, message = "仅核对上次提交结果，不会再次提交")
+                    if (driver.pendingSubmission) mutable.value = state.value.copy(step = VisitStep.WAIT_LIST, pendingSubmission = true, message = "等待返回待办页，不会再次提交")
                 }
                 while (isActive && token == generation) {
                     val step = state.value.step
@@ -126,7 +126,7 @@ class VisitRunner(
                     yield()
                 }
             } catch (cancelled: CancellationException) {
-                if (cancelled is TimeoutCancellationException && token == generation) fail(if (state.value.step == VisitStep.WAIT_LIST) "提交结果等待超时，请查看；保留保护标记，不会重复提交" else "页面转换或核验超过 30 秒，请查看")
+                if (cancelled is TimeoutCancellationException && token == generation) fail(if (state.value.step == VisitStep.WAIT_LIST) "返回待办页超时，请查看；保留保护标记，不会重复提交" else "页面转换或核验超过 30 秒，请查看")
                 else if (token == generation && scope.isActive) fail("当前步骤被取消，已暂停；请查看后继续")
                 else throw cancelled
             } catch (mismatch: VisitMismatch) {
@@ -205,7 +205,7 @@ class VisitRunner(
         if (state.value.active) debug(VisitDebugKind.STOP)
         generation++; worker?.cancel(); worker = null; stepSince = null; initialized = false
         driver.release()
-        mutable.value = VisitState(message = if (driver.pendingSubmission) "已停止；存在未确认提交，下次仅核对结果" else "已停止", pendingSubmission = driver.pendingSubmission)
+        mutable.value = VisitState(message = if (driver.pendingSubmission) "已停止；提交后尚未返回待办页，下次从等待返回继续" else "已停止", pendingSubmission = driver.pendingSubmission)
     }
     suspend fun clearRuntime(): Boolean {
         val previousWorker = worker

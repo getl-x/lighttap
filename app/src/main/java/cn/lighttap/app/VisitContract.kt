@@ -6,6 +6,22 @@ data class UiBox(val left: Int, val top: Int, val right: Int, val bottom: Int) {
     val nonEmpty get() = right > left && bottom > top
     fun intersects(other: UiBox) = left < other.right && right > other.left && top < other.bottom && bottom > other.top
 }
+
+internal fun <T> topVisitPair(history: List<T>, visits: List<T>, bounds: (T) -> UiBox): Pair<T, T>? {
+    fun sameRow(a: UiBox, b: UiBox): Boolean {
+        val overlap = minOf(a.bottom, b.bottom) - maxOf(a.top, b.top)
+        return overlap > 0 && overlap * 2 >= minOf(a.bottom - a.top, b.bottom - b.top)
+    }
+    val paired = visits.filter { visit ->
+        val button = bounds(visit)
+        history.any { bounds(it).right <= button.left && sameRow(bounds(it), button) }
+    }
+    val first = paired.minByOrNull { bounds(it).top } ?: return null
+    val box = bounds(first)
+    if (paired.count { sameRow(bounds(it), box) } != 1) return null
+    val partner = history.singleOrNull { bounds(it).right <= box.left && sameRow(bounds(it), box) } ?: return null
+    return partner to first
+}
 data class UiNode(
     val path: String,
     val text: String = "",
@@ -96,6 +112,19 @@ class VisitContract(val target: String) {
         if (tree.nodes.isEmpty()) throw VisitMismatch("无法读取当前界面")
     }
     fun loading(tree: UiTree): Boolean = tree.nodes.any { it.visible && (it.className.endsWith("ProgressBar") || it.readableText.trim() in setOf("加载中", "加载中...", "加载中…", "正在加载")) }
+    fun visitButton(tree: UiTree): UiNode? {
+        target(tree)
+        val history = tree.exact("走访记录", true).filter { it.enabled }
+        val visits = tree.exact("走访", true).filter { it.enabled }.mapNotNull {
+            try { clickable(tree, it, "走访") } catch (_: VisitMismatch) { null }
+        }.distinct()
+        return topVisitPair(history, visits, UiNode::bounds)?.second
+    }
+    fun emptyPendingList(tree: UiTree): Boolean {
+        target(tree)
+        return tree.has("待办") && !tree.has("新增") && tree.exact("走访", true).isEmpty() &&
+            tree.nodes.any { it.visible && it.readableText.trim() in setOf("暂无数据", "暂无待办", "暂无待办记录") }
+    }
     private fun leafTexts(tree: UiTree, path: String): List<UiNode> = tree.under(path).filter { n -> n.readableText.isNotBlank() && !n.editable && tree.nodes.none { it.path.startsWith(n.path + "/") && it.readableText.trim() == n.readableText.trim() } }
     private fun isLabel(text: String, label: String): Boolean = undecoratedLabel(text) == label
     private fun labels(tree: UiTree, label: String): List<UiNode> {

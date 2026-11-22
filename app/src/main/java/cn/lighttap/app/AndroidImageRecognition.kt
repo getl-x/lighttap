@@ -47,6 +47,34 @@ internal class AndroidImageRecognition(private val service: AccessibilityService
     /** Loads bundled files only. Does not capture a screen or dispatch input. */
     suspend fun warmUp() = mutex.withLock { ensureEngine(); Unit }
 
+    suspend fun findVisitButtons(): VisitImageTarget? = mutex.withLock {
+        val ocr = ensureEngine()
+        val (bitmap, capturedAt) = screenshot()
+        try {
+            val lines = recognize(ocr, bitmap, UiBox(0, 0, bitmap.width, bitmap.height))
+            ImageClickLocator.visitButton(lines, bitmap.width, bitmap.height)?.let { VisitImageTarget(it, capturedAt) }
+        } finally {
+            bitmap.eraseColor(android.graphics.Color.TRANSPARENT)
+            bitmap.recycle()
+        }
+    }
+
+    private suspend fun recognize(ocr: PaddleOCR, bitmap: Bitmap, region: UiBox): List<ImageText> {
+        val crop = Bitmap.createBitmap(bitmap, region.left, region.top, region.right - region.left, region.bottom - region.top)
+        val result = try { ocr.recognize(crop) }
+            catch (error: CancellationException) { throw error }
+            catch (_: LinkageError) { throw VisitMismatch("本地识字库与此设备不兼容，已暂停") }
+            catch (_: Exception) { throw VisitMismatch("本机图像识字失败，已暂停") }
+            finally { if (crop !== bitmap) { if (crop.isMutable) crop.eraseColor(android.graphics.Color.TRANSPARENT); crop.recycle() } }
+        currentCoroutineContext().ensureActive()
+        return result.results.map { item ->
+            ImageText(item.text, item.confidence, UiBox(region.left + floor(item.box.points.minOf { it.x }).toInt(),
+                region.top + floor(item.box.points.minOf { it.y }).toInt(),
+                region.left + ceil(item.box.points.maxOf { it.x }).toInt(),
+                region.top + ceil(item.box.points.maxOf { it.y }).toInt()))
+        }
+    }
+
     suspend fun read(tree: UiTree, button: UiNode, navigation: Boolean): ImageClickEvidence = mutex.withLock {
         val ocr = ensureEngine()
         currentCoroutineContext().ensureActive()
@@ -54,18 +82,7 @@ internal class AndroidImageRecognition(private val service: AccessibilityService
         val pixels = IntArray(bitmap.width * bitmap.height)
         try {
             val region = imageOcrRegion(button.bounds, bitmap.width, bitmap.height)
-            val crop = Bitmap.createBitmap(bitmap, region.left, region.top, region.right - region.left, region.bottom - region.top)
-            val result = try { ocr.recognize(crop) }
-                catch (error: CancellationException) { throw error }
-                catch (_: LinkageError) { throw VisitMismatch("本地识字库与此设备不兼容，已暂停") }
-                catch (_: Exception) { throw VisitMismatch("本机图像识字失败，已暂停") }
-                finally { if (crop !== bitmap) { if (crop.isMutable) crop.eraseColor(android.graphics.Color.TRANSPARENT); crop.recycle() } }
-            currentCoroutineContext().ensureActive()
-            val lines = result.results.map { item ->
-                ImageText(item.text, item.confidence, UiBox(region.left + floor(item.box.points.minOf { it.x }).toInt(),
-                    region.top + floor(item.box.points.minOf { it.y }).toInt(), region.left + ceil(item.box.points.maxOf { it.x }).toInt(),
-                    region.top + ceil(item.box.points.maxOf { it.y }).toInt()))
-            }
+            val lines = recognize(ocr, bitmap, region)
             val box = ImageClickLocator.locate(lines, if (navigation) "走访" else "提交", button.bounds, bitmap.width, bitmap.height)
             bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
             val listClear = if (navigation) clearList(tree, pixels, bitmap.width, bitmap.height) else false
@@ -203,19 +220,38 @@ internal class AndroidImageVisitUiAccess(
         }
         else surface.clear(listOf(node.bounds)) { native.perform(tree, node, action, value) }
     }
-    override suspend fun openVisit(tree: UiTree, node: UiNode) = click(tree, node, true)
-    private suspend fun click(tree: UiTree, node: UiNode, navigation: Boolean) {
+    override suspend fun openVisit(tree: UiTree, node: UiNode) =
+        surface.clear(listOf(node.bounds)) { native.openVisit(tree, node) }
+
+    override suspend fun findVisitImage(tree: UiTree): VisitImageTarget? {
+        if (Build.VERSION.SDK_INT < 30 || tree.has("新增")) return null
+        val screen = tree.node("r").bounds
+        val started = SystemClock.elapsedRealtime()
+        val button = surface.clear(listOf(screen)) { ocr.findVisitButtons() }
+        diagnostics.record(VisitDebugEvent(VisitDebugKind.IMAGE_CHECK, durationMs = SystemClock.elapsedRealtime() - started,
+            navigation = true, ok = button != null, reason = if (button == null) VISIT_BUTTONS_MISSING else null))
+        return button
+    }
+
+    override suspend fun openVisitImage(tree: UiTree, image: VisitImageTarget) {
         lastClickDispatchMs = null
-        val screen = tree.nodes.firstOrNull()?.bounds ?: throw VisitPreActionMismatch("无法读取当前界面")
-        surface.clear(listOf(screen)) { flow.click(tree, node, navigation) }
+        surface.clear(listOf(image.bounds)) {
+            if (SystemClock.elapsedRealtime() - image.capturedAt !in 0..ImageClickLocator.MAX_AGE_MS)
+                throw VisitPreActionMismatch("图像采样已过期，请重新识别")
+            tap(tree, image.bounds)
+        }
     }
     suspend fun probe() {
         val tree = native.capture()
         val contract = VisitContract(target)
-        val navigation = !tree.has("新增")
-        val node = if (navigation) tree.node(contract.top(tree).actionPath) else contract.submit(tree)
+        if (!tree.has("新增")) {
+            if (contract.visitButton(tree) == null && !contract.emptyPendingList(tree) && findVisitImage(tree) == null)
+                throw VisitMismatch(VISIT_BUTTONS_MISSING)
+            return
+        }
+        val node = contract.submit(tree)
         val screen = tree.nodes.firstOrNull()?.bounds ?: throw VisitMismatch("无法读取当前界面")
-        surface.clear(listOf(screen)) { ocr.read(tree, node, navigation) }
+        surface.clear(listOf(screen)) { ocr.read(tree, node, false) }
     }
     private suspend fun tap(tree: UiTree, box: UiBox) {
         if (service.getSystemService(KeyguardManager::class.java).isKeyguardLocked ||

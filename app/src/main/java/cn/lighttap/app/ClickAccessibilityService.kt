@@ -21,7 +21,6 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.combine
 
 class ClickAccessibilityService : AccessibilityService() {
-    val visitSuccessSignals = VisitSuccessSignals()
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var engine: ClickEngine
     private lateinit var tapDispatcher: AndroidTapDispatcher
@@ -149,9 +148,6 @@ class ClickAccessibilityService : AccessibilityService() {
     fun notice(text: String) { Toast.makeText(this, text, Toast.LENGTH_LONG).show() }
     private fun interrupt(message: String) { if (connected) { engine.fail(message); model.privateModel.controller?.pause(message, error = true) } }
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event != null && event.packageName?.toString() == PrivateModel.TARGET) {
-            visitSuccessSignals.observe(PrivateModel.TARGET, PrivateModel.TARGET, event.text.map { it.toString() }, android.os.SystemClock.elapsedRealtime())
-        }
         if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) model.privateModel.controller?.foregroundChanged(event.packageName?.toString().orEmpty())
     }
     override fun onTaskRemoved(rootIntent: Intent?) { model.privateModel.clearTask(); super.onTaskRemoved(rootIntent) }

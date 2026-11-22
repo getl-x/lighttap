@@ -92,7 +92,8 @@ class ScrolledVisitFormTest {
             UiNode("r/card/name", text = record.name, bounds = UiBox(20, 120, 120, 160)),
             UiNode("r/card/id", text = "身份证：示例", bounds = UiBox(20, 170, 300, 200)),
             UiNode("r/card/address", text = "居住地址：${record.address}"), UiNode("r/card/progress", text = "0/1"),
-            UiNode("r/card/history", text = "走访记录", clickable = true), UiNode("r/card/visit", text = "走访", clickable = true)))
+            UiNode("r/card/history", text = "走访记录", clickable = true, bounds = UiBox(300, 330, 470, 380)),
+            UiNode("r/card/visit", text = "走访", clickable = true, bounds = UiBox(500, 330, 680, 380))))
         override suspend fun capture() = if (opened) tree else list
         override suspend fun perform(tree: UiTree, node: UiNode, action: Int, value: String?) {
             when (action) {
@@ -115,8 +116,7 @@ class ScrolledVisitFormTest {
         for (recognition in VisitRecognition.entries) {
             val ui = Ui()
             val bridge = SelectedVisitUiAccess({ recognition }, ui, ui)
-            val driver = AndroidVisitDriver(bridge, VisitChoiceVerifier { _, _ -> }, Fence(),
-                VisitReturnVision { ReturnFrame(ReturnVisual.CLEAR, testScheduler.currentTime) }, { testScheduler.currentTime })
+            val driver = AndroidVisitDriver(bridge, VisitChoiceVerifier { _, _ -> }, Fence(), { testScheduler.currentTime })
             val runner = VisitRunner(backgroundScope, driver, { testScheduler.currentTime })
             runner.start(VisitSettings(targetPackage = "fixture", recognition = recognition), VisitExecution.STEP_TEST)
             advanceTimeBy(1_000); runCurrent()

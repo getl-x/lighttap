@@ -51,8 +51,9 @@ class VisitLongRunRecoveryTest {
                     UiNode("r/2/0", text = name, bounds = UiBox(20, 120, 120, 160)),
                     UiNode("r/2/1", text = "身份证：示例", bounds = UiBox(20, 170, 300, 200)),
                     UiNode("r/2/2", text = "居住地址：测试地址", bounds = UiBox(20, 220, 500, 260)),
-                    UiNode("r/2/3", text = "0/1"), UiNode("r/2/4", text = "走访记录", clickable = true),
-                    UiNode("r/2/5", text = "走访", clickable = true),
+                    UiNode("r/2/3", text = "0/1"),
+                    UiNode("r/2/4", text = "走访记录", clickable = true, bounds = UiBox(300, 330, 470, 380)),
+                    UiNode("r/2/5", text = "走访", clickable = true, bounds = UiBox(500, 330, 680, 380)),
                 )
             return UiTree("fixture", if (opened) 2 else 1, root + nodes + UiNode("r/timer", text = "倒计时${90000 - reads}天"))
         }
@@ -83,8 +84,7 @@ class VisitLongRunRecoveryTest {
                 }
             }
         }
-        val driver = AndroidVisitDriver(bridge, VisitChoiceVerifier { _, _ -> fail("Explicit normal needs no fallback") }, fence,
-            VisitReturnVision { ReturnFrame(if (replyAt != null) ReturnVisual.BLOCKED else ReturnVisual.CLEAR, now()) }, now)
+        val driver = AndroidVisitDriver(bridge, VisitChoiceVerifier { _, _ -> fail("Explicit normal needs no fallback") }, fence, now)
         val runner = VisitRunner(backgroundScope, driver, now)
         runner.start(VisitSettings(targetPackage = "fixture", mode = VisitRunMode.COUNT, countText = count.toString()), VisitExecution.FORMAL)
         var recoveries = 0

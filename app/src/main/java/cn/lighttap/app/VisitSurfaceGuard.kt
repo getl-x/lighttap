@@ -42,4 +42,6 @@ internal class SurfaceVisitUiAccess(private val delegate: VisitUiAccess, private
         surface.clear(listOf(node.bounds)) { delegate.perform(tree, node, action, value) }
     override suspend fun openVisit(tree: UiTree, node: UiNode) =
         surface.clear(listOf(node.bounds)) { delegate.openVisit(tree, node) }
+    override suspend fun findVisitImage(tree: UiTree) = delegate.findVisitImage(tree)
+    override suspend fun openVisitImage(tree: UiTree, image: VisitImageTarget) = delegate.openVisitImage(tree, image)
 }
